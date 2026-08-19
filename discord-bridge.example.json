@@ -1,0 +1,10 @@
+{
+  "project_uid": "app:your-notehub-project",
+  "device_uid": "dev:your-notecard",
+  "discord_guild_id": "your-discord-server-id",
+  "discord_channel_id": "your-discord-channel-id",
+  "allowed_user_ids": ["your-discord-user-id"],
+  "trust_discord_command_permissions": false,
+  "notefile": "messages.qi",
+  "state_path": "logs/discord-bridge.sqlite3"
+}
