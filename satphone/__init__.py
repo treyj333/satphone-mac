@@ -1,6 +1,6 @@
 """SATPHONE development and diagnostic tool."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 INBOUND_FILE = "messages.qi"
 OUTBOUND_FILE = "messages.qo"

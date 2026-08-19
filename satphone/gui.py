@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -146,10 +145,12 @@ class MainWindow(QMainWindow):
         self.last_diagnostic: Optional[DiagnosticResult] = None
         self.bridge_should_run = bool(self.settings.value("bridge_should_run", True, type=bool))
         self.bridge_restart_attempts = 0
+        self.device_available = False
+        self.bridge_state = "stopped"
 
         self.setWindowTitle("SATPHONE")
-        self.resize(1120, 760)
-        self.setMinimumSize(900, 650)
+        self.resize(1060, 760)
+        self.setMinimumSize(900, 700)
         self._build_menu()
         self._build_ui()
         self._apply_style()
@@ -161,6 +162,9 @@ class MainWindow(QMainWindow):
         self.bridge_watchdog = QTimer(self)
         self.bridge_watchdog.timeout.connect(self._bridge_watchdog_tick)
         self.bridge_watchdog.start(15000)
+        self.device_watchdog = QTimer(self)
+        self.device_watchdog.timeout.connect(lambda: self._refresh_notecard_ports(quiet=True))
+        self.device_watchdog.start(5000)
         if self.bridge_should_run:
             QTimer.singleShot(500, self._start_bridge)
 
@@ -172,12 +176,13 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget()
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(18, 14, 18, 18)
+        layout.setContentsMargins(30, 22, 30, 26)
+        layout.setSpacing(18)
 
         header = QHBoxLayout()
         title = QLabel("SATPHONE")
         title.setObjectName("appTitle")
-        subtitle = QLabel("Notecard + StarNote control center")
+        subtitle = QLabel("Simple satellite messaging for Notecard + StarNote")
         subtitle.setObjectName("subtitle")
         title_box = QVBoxLayout()
         title_box.addWidget(title)
@@ -193,110 +198,186 @@ class MainWindow(QMainWindow):
         layout.addLayout(header)
 
         self.tabs = QTabWidget()
-        self.dashboard_tab = self._dashboard_tab()
+        self.tabs.setObjectName("mainTabs")
+        self.tabs.tabBar().setElideMode(Qt.ElideNone)
+        self.tabs.tabBar().setUsesScrollButtons(False)
         self.messages_tab = self._messages_tab()
-        self.diagnostics_tab = self._diagnostics_tab()
-        self.connections_tab = self._connections_tab()
-        self.maintenance_tab = self._maintenance_tab()
-        self.firmware_tab = self._firmware_tab()
+        self.device_tab = self._device_hub_tab()
+        self.tools_tab = self._tools_hub_tab()
         self.help_tab = self._help_tab()
-        self.logs_tab = self._logs_tab()
         for label, widget in (
-            ("Dashboard", self.dashboard_tab),
             ("Messages", self.messages_tab),
-            ("Diagnostics & Repair", self.diagnostics_tab),
-            ("Connections", self.connections_tab),
-            ("Maintenance", self.maintenance_tab),
-            ("Firmware", self.firmware_tab),
-            ("Help & Setup", self.help_tab),
-            ("Logs", self.logs_tab),
+            ("Device", self.device_tab),
+            ("Tools", self.tools_tab),
+            ("Help", self.help_tab),
         ):
             self.tabs.addTab(widget, label)
         layout.addWidget(self.tabs)
         self.setCentralWidget(root)
 
+    def _device_hub_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(22, 22, 22, 22)
+        self.device_tabs = QTabWidget()
+        self.device_tabs.setObjectName("sectionTabs")
+        self.device_tabs.tabBar().setElideMode(Qt.ElideNone)
+        self.device_tabs.tabBar().setUsesScrollButtons(False)
+        self.dashboard_tab = self._dashboard_tab()
+        self.diagnostics_tab = self._diagnostics_tab()
+        self.connections_tab = self._connections_tab()
+        self.device_tabs.addTab(self.dashboard_tab, "Connect")
+        self.device_tabs.addTab(self.diagnostics_tab, "Health & Repair")
+        self.device_tabs.addTab(self.connections_tab, "Discord & Notehub")
+        layout.addWidget(self.device_tabs)
+        return page
+
+    def _tools_hub_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(22, 22, 22, 22)
+        self.tool_tabs = QTabWidget()
+        self.tool_tabs.setObjectName("sectionTabs")
+        self.tool_tabs.tabBar().setElideMode(Qt.ElideNone)
+        self.tool_tabs.tabBar().setUsesScrollButtons(False)
+        self.maintenance_tab = self._maintenance_tab()
+        self.firmware_tab = self._firmware_tab()
+        self.logs_tab = self._logs_tab()
+        self.tool_tabs.addTab(self.maintenance_tab, "Queue cleanup")
+        self.tool_tabs.addTab(self.firmware_tab, "Firmware")
+        self.tool_tabs.addTab(self.logs_tab, "Logs")
+        layout.addWidget(self.tool_tabs)
+        return page
+
     def _dashboard_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(18)
         intro = QLabel(
-            "One window controls the USB device, Discord bridge, satellite syncs, diagnostics, and maintenance."
+            "Plug in the Notecard + StarNote kit. SATPHONE finds the correct USB port for you."
         )
         intro.setWordWrap(True)
         intro.setObjectName("lead")
         layout.addWidget(intro)
 
-        device_box = QGroupBox("Connected hardware")
-        device_layout = QHBoxLayout(device_box)
+        device_box = QGroupBox("Notecard connection")
+        device_layout = QVBoxLayout(device_box)
+        self.device_detail = QLabel("Looking for a Notecard over USB…")
+        self.device_detail.setWordWrap(True)
+        device_layout.addWidget(self.device_detail)
+        port_line = QHBoxLayout()
         self.port_combo = QComboBox()
-        self.port_combo.setMinimumWidth(380)
-        refresh = QPushButton("Refresh USB")
+        self.port_combo.setMinimumWidth(360)
+        self.port_combo.currentIndexChanged.connect(self._update_readiness)
+        refresh = QPushButton("Find device")
+        refresh.setObjectName("primaryButton")
         refresh.clicked.connect(self._refresh_notecard_ports)
-        device_layout.addWidget(QLabel("Notecard port:"))
-        device_layout.addWidget(self.port_combo)
-        device_layout.addWidget(refresh)
-        device_layout.addStretch()
+        port_line.addWidget(QLabel("USB port"))
+        port_line.addWidget(self.port_combo, 1)
+        port_line.addWidget(refresh)
+        device_layout.addLayout(port_line)
         layout.addWidget(device_box)
 
-        actions = QGroupBox("Quick actions")
-        action_layout = QGridLayout(actions)
-        diag = QPushButton("Run Full Diagnostic")
+        actions = QGroupBox("Quick check")
+        action_layout = QVBoxLayout(actions)
+        action_note = QLabel(
+            "A diagnostic reads the device setup and explains anything that needs attention. It does not change settings."
+        )
+        action_note.setWordWrap(True)
+        action_layout.addWidget(action_note)
+        action_row = QHBoxLayout()
+        diag = QPushButton("Check device health")
+        diag.setObjectName("primaryButton")
         diag.clicked.connect(self._run_diagnostics)
-        receive = QPushButton("Receive Now")
-        receive.clicked.connect(self._receive_now)
-        bridge = QPushButton("Repair / Restart Discord")
-        bridge.clicked.connect(self._restart_bridge)
-        safe = QPushButton("Fix Safe Local Issues")
+        safe = QPushButton("Refresh connection services")
         safe.clicked.connect(self._safe_repair)
-        action_layout.addWidget(diag, 0, 0)
-        action_layout.addWidget(receive, 0, 1)
-        action_layout.addWidget(bridge, 1, 0)
-        action_layout.addWidget(safe, 1, 1)
+        action_row.addWidget(diag)
+        action_row.addWidget(safe)
+        action_row.addStretch()
+        action_layout.addLayout(action_row)
         layout.addWidget(actions)
 
-        self.dashboard_summary = QTextBrowser()
-        self.dashboard_summary.setHtml(
-            "<h3>Ready for a test</h3><ol><li>Make sure the Notecard and StarNote are plugged in.</li>"
-            "<li>Check that Discord says <b>online</b>.</li><li>Use <b>/satphone</b> in Discord.</li>"
-            "<li>Leave <b>Auto receive</b> on, or click <b>Receive Now</b>.</li></ol>"
-        )
-        layout.addWidget(self.dashboard_summary, 1)
+        self.health_summary = QLabel("No health check has been run yet.")
+        self.health_summary.setWordWrap(True)
+        self.health_summary.setObjectName("muted")
+        layout.addWidget(self.health_summary)
+        layout.addStretch()
         return page
 
     def _messages_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        compose_box = QGroupBox("Send from the device to Discord")
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(18)
+
+        readiness = QWidget()
+        readiness.setObjectName("readinessCard")
+        readiness_layout = QHBoxLayout(readiness)
+        readiness_layout.setContentsMargins(18, 15, 18, 15)
+        ready_copy = QVBoxLayout()
+        self.ready_title = QLabel("Connect your device")
+        self.ready_title.setObjectName("cardTitle")
+        self.ready_detail = QLabel("Plug the kit into USB, then choose Find device.")
+        self.ready_detail.setWordWrap(True)
+        self.ready_detail.setObjectName("muted")
+        ready_copy.addWidget(self.ready_title)
+        ready_copy.addWidget(self.ready_detail)
+        readiness_layout.addLayout(ready_copy, 1)
+        self.find_device_button = QPushButton("Find device")
+        self.find_device_button.setObjectName("primaryButton")
+        self.find_device_button.clicked.connect(self._refresh_notecard_ports)
+        readiness_layout.addWidget(self.find_device_button)
+        layout.addWidget(readiness)
+
+        compose_box = QGroupBox("Send to Discord")
         compose_layout = QVBoxLayout(compose_box)
+        compose_help = QLabel(
+            "Type a short message. SATPHONE queues it on the device and starts one satellite upload."
+        )
+        compose_help.setWordWrap(True)
+        compose_help.setObjectName("muted")
+        compose_layout.addWidget(compose_help)
         self.compose = QPlainTextEdit()
-        self.compose.setPlaceholderText("Type a short message (160 UTF-8 bytes maximum)…")
-        self.compose.setMaximumHeight(90)
+        self.compose.setPlaceholderText("Type your message…")
+        self.compose.setMinimumHeight(72)
+        self.compose.setMaximumHeight(100)
         self.compose.textChanged.connect(self._update_message_count)
         compose_layout.addWidget(self.compose)
         bottom = QHBoxLayout()
         self.message_count = QLabel("0 / 160 bytes")
         bottom.addWidget(self.message_count)
         bottom.addStretch()
-        send = QPushButton("Send Over Satellite")
-        send.clicked.connect(self._send_message)
-        bottom.addWidget(send)
+        self.send_button = QPushButton("Send message")
+        self.send_button.setObjectName("primaryButton")
+        self.send_button.clicked.connect(self._send_message)
+        bottom.addWidget(self.send_button)
         compose_layout.addLayout(bottom)
         layout.addWidget(compose_box)
 
-        incoming_box = QGroupBox("Messages received by this device")
+        incoming_box = QGroupBox("Receive from Discord")
         incoming_layout = QVBoxLayout(incoming_box)
+        incoming_help = QLabel(
+            "Messages sent with /satphone wait in Notehub until this device downloads them."
+        )
+        incoming_help.setWordWrap(True)
+        incoming_help.setObjectName("muted")
+        incoming_layout.addWidget(incoming_help)
         controls = QHBoxLayout()
-        receive = QPushButton("Receive Now")
-        receive.clicked.connect(self._receive_now)
-        refresh = QPushButton("Read Local Inbox")
-        refresh.clicked.connect(self._read_local_messages)
-        clear = QPushButton("Delete Displayed Local Messages…")
-        clear.clicked.connect(self._delete_local_messages)
-        self.auto_receive = QCheckBox("Auto receive after a Discord /satphone message is queued")
+        self.receive_button = QPushButton("Receive now")
+        self.receive_button.setObjectName("primaryButton")
+        self.receive_button.clicked.connect(self._receive_now)
+        self.read_inbox_button = QPushButton("Refresh inbox")
+        self.read_inbox_button.clicked.connect(self._read_local_messages)
+        self.clear_inbox_button = QPushButton("Clear displayed messages…")
+        self.clear_inbox_button.setObjectName("dangerButton")
+        self.clear_inbox_button.setEnabled(False)
+        self.clear_inbox_button.clicked.connect(self._delete_local_messages)
+        self.auto_receive = QCheckBox("Receive automatically after /satphone")
         self.auto_receive.setChecked(bool(self.settings.value("auto_receive", True, type=bool)))
         self.auto_receive.toggled.connect(lambda value: self.settings.setValue("auto_receive", value))
-        controls.addWidget(receive)
-        controls.addWidget(refresh)
-        controls.addWidget(clear)
+        controls.addWidget(self.receive_button)
+        controls.addWidget(self.read_inbox_button)
         controls.addStretch()
         controls.addWidget(self.auto_receive)
         incoming_layout.addLayout(controls)
@@ -305,32 +386,32 @@ class MainWindow(QMainWindow):
         self.message_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.message_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.message_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.message_table.setMinimumHeight(105)
         incoming_layout.addWidget(self.message_table)
+        incoming_layout.addWidget(self.clear_inbox_button, alignment=Qt.AlignRight)
         layout.addWidget(incoming_box, 1)
         return page
 
     def _diagnostics_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
         controls = QHBoxLayout()
-        run = QPushButton("Run Full Diagnostic")
+        run = QPushButton("Run health check")
+        run.setObjectName("primaryButton")
         run.clicked.connect(self._run_diagnostics)
-        safe = QPushButton("Fix Safe Local Issues")
-        safe.clicked.connect(self._safe_repair)
-        templates = QPushButton("Repair Message Templates…")
-        templates.clicked.connect(self._repair_templates)
-        transport = QPushButton("Restore Satellite Transport…")
-        transport.clicked.connect(self._repair_transport)
-        export = QPushButton("Export Report")
+        export = QPushButton("Export report")
         export.clicked.connect(self._export_diagnostic)
-        for widget in (run, safe, templates, transport, export):
+        for widget in (run, export):
             controls.addWidget(widget)
         controls.addStretch()
         layout.addLayout(controls)
         note = QLabel(
-            "Diagnostics are read-only. Template and transport changes have separate confirmation buttons."
+            "The health check is read-only. It explains the result before any repair is offered."
         )
         note.setWordWrap(True)
+        note.setObjectName("muted")
         layout.addWidget(note)
         self.diagnostic_table = QTableWidget(0, 4)
         self.diagnostic_table.setHorizontalHeaderLabels(
@@ -341,11 +422,34 @@ class MainWindow(QMainWindow):
         self.diagnostic_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.diagnostic_table.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.diagnostic_table, 1)
+
+        repairs = QGroupBox("Repairs")
+        repair_layout = QVBoxLayout(repairs)
+        repair_note = QLabel(
+            "Start with the safe refresh. Template and transport repairs change the device and always ask before writing."
+        )
+        repair_note.setWordWrap(True)
+        repair_note.setObjectName("muted")
+        repair_layout.addWidget(repair_note)
+        repair_row = QHBoxLayout()
+        safe = QPushButton("Refresh connection services")
+        safe.clicked.connect(self._safe_repair)
+        templates = QPushButton("Repair message templates…")
+        templates.clicked.connect(self._repair_templates)
+        transport = QPushButton("Restore satellite transport…")
+        transport.clicked.connect(self._repair_transport)
+        for widget in (safe, templates, transport):
+            repair_row.addWidget(widget)
+        repair_row.addStretch()
+        repair_layout.addLayout(repair_row)
+        layout.addWidget(repairs)
         return page
 
     def _connections_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
         config_box = QGroupBox("Discord and Notehub identifiers (not secrets)")
         form = QFormLayout(config_box)
         self.project_uid = QLineEdit()
@@ -361,7 +465,8 @@ class MainWindow(QMainWindow):
         form.addRow("Discord channel ID", self.channel_id)
         form.addRow("Allowed Discord user IDs", self.allowed_users)
         form.addRow("Authorization", self.trust_permissions)
-        save = QPushButton("Save Connection Settings")
+        save = QPushButton("Save connection settings")
+        save.setObjectName("primaryButton")
         save.clicked.connect(self._save_connection_fields)
         form.addRow("", save)
         layout.addWidget(config_box)
@@ -374,7 +479,7 @@ class MainWindow(QMainWindow):
         self.notehub_token = QLineEdit()
         self.notehub_token.setEchoMode(QLineEdit.Password)
         self.notehub_token.setPlaceholderText("Paste an expiring Personal Access Token")
-        save_secrets = QPushButton("Store Both in Keychain")
+        save_secrets = QPushButton("Store both in Keychain")
         save_secrets.clicked.connect(self._save_secrets)
         secrets_form.addRow("Discord bot token", self.discord_token)
         secrets_form.addRow("Notehub token", self.notehub_token)
@@ -389,7 +494,7 @@ class MainWindow(QMainWindow):
         stop.clicked.connect(self._stop_bridge)
         restart = QPushButton("Restart")
         restart.clicked.connect(self._restart_bridge)
-        register = QPushButton("Register /satphone Command…")
+        register = QPushButton("Register /satphone command…")
         register.clicked.connect(self._register_discord_command)
         for widget in (start, stop, restart, register):
             bridge_layout.addWidget(widget)
@@ -401,6 +506,8 @@ class MainWindow(QMainWindow):
     def _maintenance_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
         warning = QLabel(
             "This page shows the live messages.qi queue waiting in Notehub. Event history is a delivery record, not this queue, and this app does not erase event history."
         )
@@ -408,9 +515,11 @@ class MainWindow(QMainWindow):
         warning.setObjectName("warning")
         layout.addWidget(warning)
         buttons = QHBoxLayout()
-        preview = QPushButton("Preview Notehub Queue")
+        preview = QPushButton("Preview Notehub queue")
+        preview.setObjectName("primaryButton")
         preview.clicked.connect(self._preview_notehub)
-        delete = QPushButton("Delete Selected Queued Notes…")
+        delete = QPushButton("Delete selected queued notes…")
+        delete.setObjectName("dangerButton")
         delete.clicked.connect(self._delete_notehub_selected)
         buttons.addWidget(preview)
         buttons.addWidget(delete)
@@ -423,7 +532,7 @@ class MainWindow(QMainWindow):
         self.notehub_table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.notehub_table.setEditTriggers(QTableWidget.NoEditTriggers)
         layout.addWidget(self.notehub_table, 1)
-        local = QPushButton("Go to Local Inbox Cleanup")
+        local = QPushButton("Go to local inbox")
         local.clicked.connect(lambda: self.tabs.setCurrentWidget(self.messages_tab))
         layout.addWidget(local, alignment=Qt.AlignLeft)
         return page
@@ -431,6 +540,8 @@ class MainWindow(QMainWindow):
     def _firmware_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
         lead = QLabel(
             "T-Deck firmware center — this flashes the T-Deck's ESP32-S3 only. It does not flash the Notecard or StarNote."
         )
@@ -462,7 +573,8 @@ class MainWindow(QMainWindow):
         self.flash_ack = QCheckBox(
             "I checked the firmware release instructions and entered the address they specify."
         )
-        flash = QPushButton("Flash T-Deck Firmware…")
+        flash = QPushButton("Flash T-Deck firmware…")
+        flash.setObjectName("dangerButton")
         flash.clicked.connect(self._flash_tdeck)
         form.addRow("T-Deck USB port", port_line)
         form.addRow("Firmware image", file_line)
@@ -477,7 +589,7 @@ class MainWindow(QMainWindow):
         self.firmware_output.setPlaceholderText("Chip detection and flash verification results appear here.")
         layout.addWidget(self.firmware_output, 1)
         guidance = QLabel(
-            "Notecard firmware should use Blues' Notehub firmware workflow. StarNote flashing is an advanced service procedure because some kits need extra hardware. Open Help & Setup for links and explanations."
+            "Notecard firmware should use Blues' Notehub firmware workflow. StarNote flashing is an advanced service procedure because some kits need extra hardware. Open Help for links and explanations."
         )
         guidance.setWordWrap(True)
         layout.addWidget(guidance)
@@ -486,6 +598,7 @@ class MainWindow(QMainWindow):
     def _help_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)
         browser.setHtml(
@@ -496,10 +609,10 @@ class MainWindow(QMainWindow):
             <h2>First-time setup</h2>
             <ol>
               <li>Plug the Notecard/StarNote kit into this Mac and close any Blues browser terminal.</li>
-              <li>Open <b>Connections</b> and enter the Notehub project/device IDs and Discord server/channel IDs.</li>
+              <li>Open <b>Device → Discord &amp; Notehub</b> and enter the Notehub project/device IDs and Discord server/channel IDs.</li>
               <li>Store the Discord bot token and an expiring Notehub Personal Access Token in Keychain.</li>
               <li>Click <b>Register /satphone Command</b> once, then start the bridge.</li>
-              <li>Run <b>Full Diagnostic</b>. Approve template or transport repairs only after reading the warning.</li>
+              <li>Open <b>Device → Health &amp; Repair</b> and run a health check. Approve template or transport repairs only after reading the warning.</li>
             </ol>
             <h2>Complete a message test</h2>
             <ol>
@@ -507,7 +620,7 @@ class MainWindow(QMainWindow):
               <li>Discord should say the message was queued in Notehub.</li>
               <li>If Auto receive is on, this app begins the inbound satellite sync. Otherwise click <b>Receive Now</b>.</li>
               <li>Move outside with a wide, clear view of the sky. A satellite attempt can take several minutes.</li>
-              <li>The message appears in the Messages tab after the local sync completes.</li>
+              <li>The message appears in <b>Messages</b> after the local sync completes.</li>
             </ol>
             <h2>Satellite versus Wi-Fi</h2>
             <p>Normal tests use the transport currently configured on the Notecard. The diagnostic shows that choice. A one-time Wi-Fi or cellular sync can be necessary after creating a new compact message template; after that, use <b>Restore Satellite Transport</b> to return to NTN-only testing.</p>
@@ -516,7 +629,7 @@ class MainWindow(QMainWindow):
             <h2>Automatic repair</h2>
             <p>The app reopens USB for every operation, serializes all device work, and restarts its own Discord bridge when it unexpectedly stops. It can refresh USB discovery safely. Permanent device changes, message deletion, and firmware flashing always need your confirmation.</p>
             <h2>Firmware</h2>
-            <p>The Firmware tab supports a T-Deck ESP32-S3 <code>.bin</code> image at the exact address supplied by its release instructions. A wrong image or address can stop the T-Deck from booting. Notecard updates should use the <a href="https://dev.blues.io/notehub/host-firmware-updates/notecard-outboard-firmware-update/">Blues Notehub firmware workflow</a>. StarNote updates may require special hardware; follow the <a href="https://dev.blues.io/starnote/starnote-firmware-releases/">official StarNote release instructions</a>.</p>
+            <p><b>Tools → Firmware</b> supports a T-Deck ESP32-S3 <code>.bin</code> image at the exact address supplied by its release instructions. A wrong image or address can stop the T-Deck from booting. Notecard updates should use the <a href="https://dev.blues.io/notehub/host-firmware-updates/notecard-outboard-firmware-update/">Blues Notehub firmware workflow</a>. StarNote updates may require special hardware; follow the <a href="https://dev.blues.io/starnote/starnote-firmware-releases/">official StarNote release instructions</a>.</p>
             <h2>Opening an unsigned GitHub download</h2>
             <p>Because this is a community app and not notarized by Apple, macOS may warn the first time. In Finder, Control-click SATPHONE.app, choose <b>Open</b>, then confirm. Only download releases from the project’s GitHub page.</p>
             <h2>When something is busy</h2>
@@ -529,6 +642,8 @@ class MainWindow(QMainWindow):
     def _logs_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
         controls = QHBoxLayout()
         open_folder = QPushButton("Open App Data Folder")
         open_folder.clicked.connect(
@@ -549,48 +664,126 @@ class MainWindow(QMainWindow):
     def _apply_style(self) -> None:
         self.setStyleSheet(
             """
-            QMainWindow, QWidget { background: #f6f7f9; color: #172033; }
-            QLabel#appTitle { font-size: 28px; font-weight: 800; color: #102a43; }
-            QLabel#subtitle { color: #52667a; }
-            QLabel#lead { font-size: 15px; color: #334e68; padding: 4px 0 8px 0; }
-            QLabel#warning { background: #fff7ed; color: #9a3412; border: 1px solid #fdba74; border-radius: 7px; padding: 10px; }
-            QLabel#statusBadge { background: white; border: 1px solid #cbd5e1; border-radius: 12px; padding: 6px 10px; }
-            QGroupBox { background: white; border: 1px solid #d8e0e8; border-radius: 8px; margin-top: 10px; padding: 12px; font-weight: 650; }
-            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }
-            QPushButton { background: #155eef; color: white; border: none; border-radius: 6px; padding: 8px 13px; font-weight: 600; }
-            QPushButton:hover { background: #004eeb; }
-            QPushButton:disabled { background: #94a3b8; }
-            QLineEdit, QPlainTextEdit, QTextBrowser, QComboBox, QTableWidget { background: white; border: 1px solid #cbd5e1; border-radius: 5px; padding: 4px; }
-            QTabWidget::pane { border: 1px solid #d8e0e8; background: #f8fafc; }
-            QTabBar::tab { padding: 9px 12px; }
-            QTabBar::tab:selected { color: #155eef; font-weight: 700; }
+            QMainWindow { background: #f7f8fa; }
+            QWidget { color: #1d2939; font-size: 13px; }
+            QLabel, QCheckBox { background: transparent; }
+            QLabel#appTitle { font-size: 27px; font-weight: 750; color: #101828; }
+            QLabel#subtitle, QLabel#muted { color: #667085; }
+            QLabel#lead { font-size: 15px; color: #344054; padding: 2px 0 6px 0; }
+            QLabel#cardTitle { font-size: 17px; font-weight: 700; color: #101828; }
+            QLabel#warning { background: #fffaeb; color: #93370d; border: 1px solid #fedf89; border-radius: 9px; padding: 12px; }
+            QLabel#statusBadge { background: white; border: 1px solid #d0d5dd; border-radius: 13px; padding: 7px 11px; }
+            QWidget#readinessCard { background: #eef4ff; border: 1px solid #b2ccff; border-radius: 11px; }
+            QGroupBox { background: white; border: 1px solid #e4e7ec; border-radius: 10px; margin-top: 12px; padding: 18px; font-weight: 650; }
+            QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; color: #101828; }
+            QPushButton { background: white; color: #344054; border: 1px solid #d0d5dd; border-radius: 7px; padding: 9px 14px; font-weight: 600; }
+            QPushButton:hover { background: #f9fafb; border-color: #98a2b3; }
+            QPushButton#primaryButton { background: #155eef; color: white; border-color: #155eef; }
+            QPushButton#primaryButton:hover { background: #004eeb; border-color: #004eeb; }
+            QPushButton#dangerButton { color: #b42318; border-color: #fda29b; }
+            QPushButton#dangerButton:hover { background: #fef3f2; border-color: #f97066; }
+            QPushButton:disabled { background: #f2f4f7; color: #98a2b3; border-color: #e4e7ec; }
+            QPushButton#primaryButton:disabled { background: #dbe7ff; color: #84adff; border-color: #dbe7ff; }
+            QPushButton#dangerButton:disabled { background: #f2f4f7; color: #98a2b3; border-color: #e4e7ec; }
+            QLineEdit, QPlainTextEdit, QTextBrowser, QComboBox, QTableWidget { background: white; border: 1px solid #d0d5dd; border-radius: 7px; padding: 6px; selection-background-color: #d1e0ff; }
+            QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus { border-color: #528bff; }
+            QTableWidget { gridline-color: #eaecf0; }
+            QHeaderView::section { background: #f9fafb; color: #475467; border: none; border-bottom: 1px solid #eaecf0; padding: 8px; font-weight: 650; }
+            QTabWidget#mainTabs::pane { border: none; background: #f7f8fa; }
+            QTabWidget#mainTabs > QTabBar::tab { padding: 10px 20px; margin-right: 4px; color: #667085; border: none; background: transparent; }
+            QTabWidget#mainTabs > QTabBar::tab:selected { color: #155eef; font-weight: 700; border-bottom: 2px solid #155eef; }
+            QTabWidget#sectionTabs::pane { border: 1px solid #e4e7ec; border-radius: 10px; background: white; top: -1px; }
+            QTabWidget#sectionTabs > QTabBar::tab { padding: 9px 15px; color: #667085; border: none; background: #f9fafb; }
+            QTabWidget#sectionTabs > QTabBar::tab:selected { color: #155eef; font-weight: 700; background: white; }
             """
         )
 
     def _selected_port(self) -> Optional[str]:
         return self.port_combo.currentData()
 
-    def _refresh_notecard_ports(self) -> None:
+    def _refresh_notecard_ports(self, quiet: bool = False) -> None:
+        if self.usb_busy:
+            return
         selected = self._selected_port()
-        self.port_combo.clear()
+        was_available = self.device_available
         try:
             ports = self.device.ports()
         except Exception as exc:
+            self.device_available = False
             self.notecard_badge.setText("Notecard: USB error")
             self._log("USB discovery failed: {}".format(exc))
+            self._update_readiness()
             return
-        for port in ports:
-            self.port_combo.addItem("{} — {}".format(port.device, port.description), port.device)
-        if selected:
-            index = self.port_combo.findData(selected)
-            if index >= 0:
-                self.port_combo.setCurrentIndex(index)
+        discovered = [port.device for port in ports]
+        displayed = [
+            self.port_combo.itemData(index)
+            for index in range(self.port_combo.count())
+            if self.port_combo.itemData(index)
+        ]
+        if displayed != discovered:
+            self.port_combo.blockSignals(True)
+            self.port_combo.clear()
+            for port in ports:
+                self.port_combo.addItem("{} — {}".format(port.device, port.description), port.device)
+            if selected:
+                index = self.port_combo.findData(selected)
+                if index >= 0:
+                    self.port_combo.setCurrentIndex(index)
+            self.port_combo.blockSignals(False)
         if ports:
+            self.device_available = True
             self.notecard_badge.setText("Notecard: detected")
-            self._log("Detected Notecard on {}.".format(ports[0].device))
+            if not quiet or not was_available:
+                self._log("Detected Notecard on {}.".format(self._selected_port() or ports[0].device))
         else:
+            self.device_available = False
             self.notecard_badge.setText("Notecard: unplugged")
-            self.port_combo.addItem("No Notecard detected", None)
+            if self.port_combo.count() != 1 or self.port_combo.itemData(0) is not None:
+                self.port_combo.blockSignals(True)
+                self.port_combo.clear()
+                self.port_combo.addItem("No Notecard detected", None)
+                self.port_combo.blockSignals(False)
+            if was_available:
+                self._log("The Notecard was disconnected.")
+        self._update_readiness()
+
+    def _update_readiness(self) -> None:
+        available = bool(self._selected_port()) if hasattr(self, "port_combo") else self.device_available
+        self.device_available = available
+        if not hasattr(self, "ready_title"):
+            return
+        for button in (self.send_button, self.receive_button, self.read_inbox_button):
+            button.setEnabled(available and not self.usb_busy)
+        if not available:
+            self.ready_title.setText("Connect your device")
+            self.ready_detail.setText(
+                "Plug the Notecard + StarNote kit into USB. SATPHONE will find it automatically."
+            )
+            self.find_device_button.setText("Find device")
+            self.find_device_button.setObjectName("primaryButton")
+            if hasattr(self, "device_detail"):
+                self.device_detail.setText(
+                    "No Notecard is visible. Plug it directly into this Mac, then choose Find device."
+                )
+        elif self.usb_busy:
+            self.ready_title.setText("Device is working")
+            self.ready_detail.setText("SATPHONE is completing the current satellite or USB task.")
+            self.find_device_button.setText("Working…")
+            if hasattr(self, "device_detail"):
+                self.device_detail.setText("Connected on {}. A device task is running.".format(self._selected_port()))
+        else:
+            self.ready_title.setText("Ready to send")
+            if self.bridge_state == "online":
+                detail = "Device connected. Discord receiving is online."
+            else:
+                detail = "Device connected. Sending works now; Discord receiving is still starting."
+            self.ready_detail.setText(detail)
+            self.find_device_button.setText("Check connection")
+            self.find_device_button.setObjectName("")
+            if hasattr(self, "device_detail"):
+                self.device_detail.setText("Connected on {}. SATPHONE selected this port automatically.".format(self._selected_port()))
+        self.find_device_button.style().unpolish(self.find_device_button)
+        self.find_device_button.style().polish(self.find_device_button)
 
     def _refresh_firmware_ports(self) -> None:
         selected = self.firmware_port.currentData() if hasattr(self, "firmware_port") else None
@@ -632,6 +825,7 @@ class MainWindow(QMainWindow):
         if usb:
             self.usb_busy = True
             self.notecard_badge.setText("Notecard: busy")
+            self._update_readiness()
         self._log("{} started.".format(label))
         worker = Worker(function, with_progress=with_progress)
         if on_result:
@@ -660,8 +854,8 @@ class MainWindow(QMainWindow):
 
     def _usb_finished(self, label: str) -> None:
         self.usb_busy = False
-        self.notecard_badge.setText("Notecard: detected")
         self._log("{} finished.".format(label))
+        self._refresh_notecard_ports(quiet=True)
         if self.pending_auto_receive and self.auto_receive.isChecked():
             self.pending_auto_receive = False
             QTimer.singleShot(250, lambda: self._receive_now(automatic=True))
@@ -713,13 +907,13 @@ class MainWindow(QMainWindow):
             self.diagnostic_table.setItem(row, 1, QTableWidgetItem(check.name))
             self.diagnostic_table.setItem(row, 2, QTableWidgetItem(check.summary))
             self.diagnostic_table.setItem(row, 3, QTableWidgetItem(check.recommendation or "—"))
-        self.dashboard_summary.setHtml(
-            "<h3>Latest diagnostic</h3><p><b>{}</b> checks passed; <b>{}</b> need attention.</p>"
-            "<p>Open <b>Diagnostics & Repair</b> for details. No persistent setting was changed.</p>".format(
+        self.health_summary.setText(
+            "Latest check: {} passed; {} need attention. No setting was changed.".format(
                 pass_count, fail_count
             )
         )
-        self.tabs.setCurrentWidget(self.diagnostics_tab)
+        self.tabs.setCurrentWidget(self.device_tab)
+        self.device_tabs.setCurrentWidget(self.diagnostics_tab)
         self._log("Diagnostic completed with {} pass and {} fail checks.".format(pass_count, fail_count))
 
     def _receive_now(self, automatic: bool = False) -> None:
@@ -761,6 +955,7 @@ class MainWindow(QMainWindow):
 
     def _show_local_messages(self, messages: List[Message]) -> None:
         self.local_messages = list(messages)
+        self.clear_inbox_button.setEnabled(bool(messages))
         self.message_table.setRowCount(len(messages))
         for row, message in enumerate(messages):
             self.message_table.setItem(row, 0, QTableWidgetItem(_timestamp(message.time)))
@@ -789,6 +984,7 @@ class MainWindow(QMainWindow):
 
     def _local_delete_finished(self, deleted: List[Message]) -> None:
         self.local_messages = []
+        self.clear_inbox_button.setEnabled(False)
         self.message_table.setRowCount(0)
         QMessageBox.information(self, "Local inbox cleared", "Deleted {} local message(s).".format(len(deleted)))
 
@@ -974,8 +1170,10 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _bridge_status_changed(self, status: str) -> None:
+        self.bridge_state = status
         self.bridge_badge.setText("Discord: {}".format(status))
         self._log("Discord bridge status: {}.".format(status))
+        self._update_readiness()
         if status == "online":
             self.bridge_restart_attempts = 0
 

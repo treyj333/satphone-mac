@@ -4,7 +4,7 @@ SATPHONE is a community macOS application for operating and diagnosing a Blues N
 
 The app provides:
 
-- a dashboard for the Notecard, StarNote, Discord, and Notehub;
+- a focused Messages screen that finds the Notecard automatically and makes send/receive readiness clear;
 - messages in both directions, with optional automatic inbound sync after `/satphone`;
 - read-only diagnostics and safe local self-repair;
 - separately confirmed template and satellite-transport repairs;
@@ -56,10 +56,10 @@ The GitHub workflow runs the full simulated test suite, builds an unsigned/ad-ho
 ## First-time app setup
 
 1. Plug the Notecard/StarNote kit into the Mac and close the Blues browser terminal.
-2. Open **Connections** and enter the Notehub ProjectUID and DeviceUID plus the Discord server/channel IDs.
+2. Open **Device → Discord & Notehub** and enter the Notehub ProjectUID and DeviceUID plus the Discord server/channel IDs.
 3. Store the Discord bot token and an expiring Notehub Personal Access Token in Keychain.
 4. Register `/satphone` once, then start the bridge.
-5. Run **Full Diagnostic**. Review and separately approve any persistent template or transport repair.
+5. Open **Device → Health & Repair** and run the health check. Review and separately approve any persistent template or transport repair.
 6. In Discord, use `/satphone`; do not post an ordinary channel message. Leave **Auto receive** on or click **Receive Now**.
 
 ## Safety boundaries
