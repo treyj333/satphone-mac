@@ -64,10 +64,92 @@ from .firmware import FirmwarePort, flash_tdeck, inspect_tdeck, list_firmware_po
 from .messages import message_size_bytes, validate_message
 from .models import CheckLevel, Message, SyncPhase, SyncUpdate
 from .notehub_admin import NotehubAdminClient, NotehubNote
+from .satellite import status_tags, transport_status_error, transport_supports_ntn
 
 
 APP_DISPLAY_NAME = "Tacthrift Notecard Satphone"
 LEGACY_SETTINGS_NAME = "SATPHONE"
+
+
+def _satellite_readiness_copy(result: Dict[str, Any]) -> tuple[str, str]:
+    """Describe read-only satellite state without claiming unproven coverage."""
+    ntn = result.get("ntn") if isinstance(result.get("ntn"), dict) else {}
+    transport = (
+        result.get("transport") if isinstance(result.get("transport"), dict) else {}
+    )
+    transport_error = transport_status_error(transport)
+    if transport_error:
+        return (
+            "Satellite setup unclear",
+            "The transport setting could not be read: {}. No satellite connection was proven.".format(
+                transport_error
+            ),
+        )
+    if not transport_supports_ntn(transport):
+        return (
+            "Satellite mode is not enabled",
+            "The device transport is '{}'. Open Device → Health & Repair before satellite testing.".format(
+                transport.get("method", "unknown")
+            ),
+        )
+
+    status = str(ntn.get("status", "")).strip()
+    error = ntn.get("err") or ntn.get("_exception")
+    tags = status_tags("{} {}".format(status, error or ""))
+    if "no-ntn-module" in tags:
+        return (
+            "StarNote not detected",
+            "The Notecard is connected over USB, but no satellite module is responding.",
+        )
+    if error:
+        return (
+            "Satellite check failed",
+            "StarNote returned: {}. No satellite connection was proven.".format(error),
+        )
+    if "ntn-connect-failure" in tags:
+        return (
+            "Satellite connection failed",
+            "{} Move outside with a wide, clear view of the sky before trying again.".format(
+                status or "StarNote could not reach the satellite network."
+            ),
+        )
+    if tags & {"ntn-uplinking", "ntn-downlinking"}:
+        return (
+            "Satellite transfer active",
+            "StarNote reports: {}. Final delivery still requires a completed sync.".format(
+                status or "data transfer in progress"
+            ),
+        )
+    if "ntn-connected" in tags:
+        return (
+            "Satellite session connected",
+            "StarNote reports an active session. Final delivery is confirmed only after the sync completes.",
+        )
+    if tags & {"ntn-initializing", "ntn-power", "ntn-connecting", "ntn-gps"}:
+        return (
+            "Searching for satellite",
+            "StarNote reports: {}. Indoors can block the signal; move outside with a wide, clear view of the sky.".format(
+                status or "connection in progress"
+            ),
+        )
+    if "ntn-idle" in tags:
+        location_note = (
+            " StarNote also says its location is unknown."
+            if "ntn-unknown-location" in tags
+            else ""
+        )
+        return (
+            "Satellite not active",
+            "USB and StarNote respond, but no satellite session is active. Idle does not prove sky coverage.{} Move outside before sending.".format(
+                location_note
+            ),
+        )
+    return (
+        "Satellite status unclear",
+        "StarNote reports: {}. This is not proof of a usable satellite connection.".format(
+            status or "no recognizable status"
+        ),
+    )
 
 
 class AppSignals(QObject):
@@ -132,6 +214,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings(LEGACY_SETTINGS_NAME, LEGACY_SETTINGS_NAME)
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(4)
+        self.active_workers: set[Worker] = set()
         self.device = DeviceService(
             poll_seconds=float(self.settings.value("sync_poll_seconds", 10)),
             timeout_seconds=float(self.settings.value("sync_timeout_seconds", 900)),
@@ -154,6 +237,9 @@ class MainWindow(QMainWindow):
         self.bridge_restart_attempts = 0
         self.device_available = False
         self.bridge_state = "stopped"
+        self.satellite_status_port: Optional[str] = None
+        self.satellite_title = ""
+        self.satellite_detail = ""
 
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.resize(1060, 760)
@@ -333,7 +419,7 @@ class MainWindow(QMainWindow):
         readiness_layout.addLayout(ready_copy, 1)
         self.find_device_button = QPushButton("Find device")
         self.find_device_button.setObjectName("primaryButton")
-        self.find_device_button.clicked.connect(self._refresh_notecard_ports)
+        self.find_device_button.clicked.connect(self._find_or_check_connection)
         readiness_layout.addWidget(self.find_device_button)
         layout.addWidget(readiness)
 
@@ -781,7 +867,7 @@ class MainWindow(QMainWindow):
             self.port_combo.blockSignals(False)
         if ports:
             self.device_available = True
-            self.notecard_badge.setText("Notecard: detected")
+            self.notecard_badge.setText("Notecard: USB detected")
             if not quiet or not was_available:
                 self._log("Detected Notecard on {}.".format(self._selected_port() or ports[0].device))
         else:
@@ -799,6 +885,11 @@ class MainWindow(QMainWindow):
     def _update_readiness(self) -> None:
         available = bool(self._selected_port()) if hasattr(self, "port_combo") else self.device_available
         self.device_available = available
+        selected_port = self._selected_port() if hasattr(self, "port_combo") else None
+        if self.satellite_status_port and self.satellite_status_port != selected_port:
+            self.satellite_status_port = None
+            self.satellite_title = ""
+            self.satellite_detail = ""
         if not hasattr(self, "ready_title"):
             return
         for button in (self.send_button, self.receive_button, self.read_inbox_button):
@@ -821,18 +912,53 @@ class MainWindow(QMainWindow):
             if hasattr(self, "device_detail"):
                 self.device_detail.setText("Connected on {}. A device task is running.".format(self._selected_port()))
         else:
-            self.ready_title.setText("Ready to send")
-            if self.bridge_state == "online":
-                detail = "Device connected. Discord receiving is online."
+            if self.satellite_status_port == selected_port and self.satellite_title:
+                self.ready_title.setText(self.satellite_title)
+                detail = self.satellite_detail
             else:
-                detail = "Device connected. Sending works now; Discord receiving is still starting."
+                self.ready_title.setText("Device connected over USB")
+                detail = (
+                    "USB is working, but satellite coverage has not been checked. "
+                    "Move outside with a wide, clear view of the sky, then check satellite status."
+                )
+            if self.bridge_state == "online":
+                detail = "{} Discord receiving is online.".format(detail)
             self.ready_detail.setText(detail)
-            self.find_device_button.setText("Check connection")
+            self.find_device_button.setText(
+                "Check again"
+                if self.satellite_status_port == selected_port and self.satellite_title
+                else "Check satellite status"
+            )
             self.find_device_button.setObjectName("")
             if hasattr(self, "device_detail"):
-                self.device_detail.setText("Connected on {}. Tacthrift selected this port automatically.".format(self._selected_port()))
+                self.device_detail.setText(
+                    "USB connected on {}. Satellite availability is reported separately.".format(
+                        self._selected_port()
+                    )
+                )
         self.find_device_button.style().unpolish(self.find_device_button)
         self.find_device_button.style().polish(self.find_device_button)
+
+    def _find_or_check_connection(self) -> None:
+        self._refresh_notecard_ports()
+        port = self._selected_port()
+        if not port:
+            return
+        self.satellite_status_port = None
+        self.satellite_title = ""
+        self.satellite_detail = ""
+        self._run_worker(
+            lambda: self.device.connection_status(port),
+            lambda result: self._show_connection_status(port, result),
+            label="Read-only satellite status check",
+            usb=True,
+        )
+
+    def _show_connection_status(self, port: str, result: Dict[str, Any]) -> None:
+        self.satellite_status_port = port
+        self.satellite_title, self.satellite_detail = _satellite_readiness_copy(result)
+        self._log("Satellite status: {}.".format(self.satellite_title))
+        self._update_readiness()
 
     def _refresh_firmware_ports(self) -> None:
         selected = self.firmware_port.currentData() if hasattr(self, "firmware_port") else None
@@ -877,16 +1003,28 @@ class MainWindow(QMainWindow):
             self._update_readiness()
         self._log("{} started.".format(label))
         worker = Worker(function, with_progress=with_progress)
+        # Keep the Python signal owner alive until every queued completion
+        # callback has reached the main thread.
+        worker.setAutoDelete(False)
+        self.active_workers.add(worker)
         if on_result:
             worker.signals.result.connect(on_result)
         worker.signals.error.connect(lambda message: self._task_error(label, message))
         worker.signals.progress.connect(self._task_progress)
-        if usb:
-            worker.signals.finished.connect(lambda: self._usb_finished(label))
-        else:
-            worker.signals.finished.connect(lambda: self._log("{} finished.".format(label)))
+        worker.signals.finished.connect(
+            lambda worker=worker: self._worker_finished(worker, label, usb)
+        )
         self.thread_pool.start(worker)
         return True
+
+    def _worker_finished(self, worker: Worker, label: str, usb: bool) -> None:
+        try:
+            if usb:
+                self._usb_finished(label)
+            else:
+                self._log("{} finished.".format(label))
+        finally:
+            self.active_workers.discard(worker)
 
     @Slot(object)
     def _task_progress(self, value: object) -> None:
@@ -1053,7 +1191,7 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(
             self,
             "Send over satellite?",
-            "Queue this message locally and start one outbound sync? Satellite data may be consumed.",
+            "Queue this message locally and start one outbound sync? Satellite data may be consumed. USB detection does not prove sky coverage; move outside with a wide, clear view of the sky.",
         )
         if answer != QMessageBox.Yes:
             return

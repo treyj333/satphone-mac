@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from satphone.app_service import DeviceService
-from satphone.gui import APP_DISPLAY_NAME, MainWindow
+from satphone.gui import APP_DISPLAY_NAME, MainWindow, _satellite_readiness_copy
 
 
 class GuiStructureTests(unittest.TestCase):
@@ -66,8 +66,64 @@ class GuiStructureTests(unittest.TestCase):
             style = window.styleSheet().lower()
             self.assertIn("background: #171717", style)
             self.assertNotIn("#155eef", style)
+
+            with patch.object(DeviceService, "ports", return_value=[]):
+                self.assertTrue(
+                    window._run_worker(
+                        lambda: "done",
+                        label="Worker lifecycle test",
+                        usb=True,
+                    )
+                )
+                self.assertTrue(window.thread_pool.waitForDone(1000))
+                self.app.processEvents()
+            self.assertFalse(window.usb_busy)
+            self.assertFalse(window.active_workers)
         finally:
             window.close()
+
+
+class SatelliteReadinessCopyTests(unittest.TestCase):
+    def test_connecting_never_claims_ready(self) -> None:
+        title, detail = _satellite_readiness_copy(
+            {
+                "ntn": {
+                    "status": "waiting for satellite network {ntn-connecting}{ntn-power}{ntn-gps}"
+                },
+                "transport": {"method": "ntn"},
+            }
+        )
+        self.assertEqual(title, "Searching for satellite")
+        self.assertIn("move outside", detail.lower())
+
+    def test_idle_explains_that_coverage_is_unproven(self) -> None:
+        title, detail = _satellite_readiness_copy(
+            {
+                "ntn": {"status": "{ntn-idle}"},
+                "transport": {"method": "ntn"},
+            }
+        )
+        self.assertEqual(title, "Satellite not active")
+        self.assertIn("does not prove", detail.lower())
+
+    def test_active_transfer_is_precise_about_delivery(self) -> None:
+        title, detail = _satellite_readiness_copy(
+            {
+                "ntn": {"status": "{ntn-connected}{ntn-uplinking}"},
+                "transport": {"method": "ntn"},
+            }
+        )
+        self.assertEqual(title, "Satellite transfer active")
+        self.assertIn("completed sync", detail.lower())
+
+    def test_non_ntn_transport_is_not_ready(self) -> None:
+        title, _detail = _satellite_readiness_copy(
+            {
+                "ntn": {"status": "{ntn-idle}"},
+                "transport": {"method": "wifi"},
+            }
+        )
+        self.assertEqual(title, "Satellite mode is not enabled")
 
 
 if __name__ == "__main__":

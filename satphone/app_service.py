@@ -21,7 +21,7 @@ from .messages import (
 from .models import DiagnosticSnapshot, Message, SyncResult, SyncUpdate, TemplateCheck
 from .notecard import DeviceNotFoundError, NotecardClient, SerialDevice, discover_notecard_ports
 from .reporting import export_report
-from .satellite import SyncMonitor, set_ntn_transport, transport_status
+from .satellite import SyncMonitor, ntn_status, set_ntn_transport, transport_status
 
 
 @dataclass
@@ -157,6 +157,16 @@ class DeviceService:
 
     def get_transport(self, port: Optional[str]) -> Dict[str, Any]:
         return self._with_client(port, transport_status)
+
+    def connection_status(self, port: Optional[str]) -> Dict[str, Dict[str, Any]]:
+        """Read USB-visible satellite state without starting a paid sync."""
+        return self._with_client(
+            port,
+            lambda client: {
+                "ntn": ntn_status(client),
+                "transport": transport_status(client),
+            },
+        )
 
     def repair_transport(self, port: Optional[str]) -> Dict[str, Dict[str, Any]]:
         return self._with_client(port, set_ntn_transport)

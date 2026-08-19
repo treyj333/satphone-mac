@@ -1,6 +1,6 @@
 """Tacthrift Notecard Satphone development and diagnostic tool."""
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 INBOUND_FILE = "messages.qi"
 OUTBOUND_FILE = "messages.qo"
