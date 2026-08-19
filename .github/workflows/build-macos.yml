@@ -43,16 +43,16 @@ jobs:
       - name: Upload downloadable app artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SATPHONE-macOS-${{ runner.arch }}
-          path: release/SATPHONE-macOS-*.zip
+          name: Tacthrift-Notecard-Satphone-macOS-${{ runner.arch }}
+          path: release/Tacthrift-Notecard-Satphone-macOS-*.zip
 
       - name: Attach app to tagged GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: release/SATPHONE-macOS-*.zip
+          files: release/Tacthrift-Notecard-Satphone-macOS-*.zip
           body: |
-            Community SATPHONE macOS build. This app is not notarized by Apple.
+            Tacthrift Notecard Satphone community macOS build. This app is not notarized by Apple.
 
-            After downloading, unzip it. The first time, Control-click SATPHONE.app, choose Open, then confirm.
+            After downloading, unzip it. The first time, Control-click Tacthrift Notecard Satphone.app, choose Open, then confirm.

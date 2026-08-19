@@ -1,4 +1,4 @@
-"""PySide6 desktop interface for SATPHONE."""
+"""PySide6 desktop interface for Tacthrift Notecard Satphone."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QTableWidget,
@@ -62,6 +64,10 @@ from .firmware import FirmwarePort, flash_tdeck, inspect_tdeck, list_firmware_po
 from .messages import message_size_bytes, validate_message
 from .models import CheckLevel, Message, SyncPhase, SyncUpdate
 from .notehub_admin import NotehubAdminClient, NotehubNote
+
+
+APP_DISPLAY_NAME = "Tacthrift Notecard Satphone"
+LEGACY_SETTINGS_NAME = "SATPHONE"
 
 
 class AppSignals(QObject):
@@ -101,10 +107,10 @@ class Worker(QRunnable):
 
 def _level_color(level: CheckLevel) -> QColor:
     return {
-        CheckLevel.PASS: QColor("#15803d"),
-        CheckLevel.WARN: QColor("#b45309"),
-        CheckLevel.FAIL: QColor("#b91c1c"),
-        CheckLevel.INFO: QColor("#0369a1"),
+        CheckLevel.PASS: QColor("#404040"),
+        CheckLevel.WARN: QColor("#525252"),
+        CheckLevel.FAIL: QColor("#000000"),
+        CheckLevel.INFO: QColor("#737373"),
     }[level]
 
 
@@ -122,7 +128,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         ensure_app_directories()
         migrate_bridge_config()
-        self.settings = QSettings("SATPHONE", "SATPHONE")
+        # Keep the legacy settings identity so the rebrand preserves existing setup.
+        self.settings = QSettings(LEGACY_SETTINGS_NAME, LEGACY_SETTINGS_NAME)
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(4)
         self.device = DeviceService(
@@ -148,7 +155,7 @@ class MainWindow(QMainWindow):
         self.device_available = False
         self.bridge_state = "stopped"
 
-        self.setWindowTitle("SATPHONE")
+        self.setWindowTitle(APP_DISPLAY_NAME)
         self.resize(1060, 760)
         self.setMinimumSize(900, 700)
         self._build_menu()
@@ -157,7 +164,7 @@ class MainWindow(QMainWindow):
         self._load_connection_fields()
         self._refresh_notecard_ports()
         self._refresh_firmware_ports()
-        self._log("SATPHONE application started.")
+        self._log("{} application started.".format(APP_DISPLAY_NAME))
 
         self.bridge_watchdog = QTimer(self)
         self.bridge_watchdog.timeout.connect(self._bridge_watchdog_tick)
@@ -169,7 +176,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(500, self._start_bridge)
 
     def _build_menu(self) -> None:
-        help_action = QAction("SATPHONE Help", self)
+        help_action = QAction("{} Help".format(APP_DISPLAY_NAME), self)
         help_action.triggered.connect(lambda: self.tabs.setCurrentWidget(self.help_tab))
         self.menuBar().addMenu("Help").addAction(help_action)
 
@@ -180,7 +187,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(18)
 
         header = QHBoxLayout()
-        title = QLabel("SATPHONE")
+        title = QLabel(APP_DISPLAY_NAME)
         title.setObjectName("appTitle")
         subtitle = QLabel("Simple satellite messaging for Notecard + StarNote")
         subtitle.setObjectName("subtitle")
@@ -255,7 +262,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(18)
         intro = QLabel(
-            "Plug in the Notecard + StarNote kit. SATPHONE finds the correct USB port for you."
+            "Plug in the Notecard + StarNote kit. Tacthrift finds the correct USB port for you."
         )
         intro.setWordWrap(True)
         intro.setObjectName("lead")
@@ -333,7 +340,7 @@ class MainWindow(QMainWindow):
         compose_box = QGroupBox("Send to Discord")
         compose_layout = QVBoxLayout(compose_box)
         compose_help = QLabel(
-            "Type a short message. SATPHONE queues it on the device and starts one satellite upload."
+            "Type a short message. Tacthrift queues it on the device and starts one satellite upload."
         )
         compose_help.setWordWrap(True)
         compose_help.setObjectName("muted")
@@ -372,12 +379,14 @@ class MainWindow(QMainWindow):
         self.clear_inbox_button = QPushButton("Clear displayed messages…")
         self.clear_inbox_button.setObjectName("dangerButton")
         self.clear_inbox_button.setEnabled(False)
+        self.clear_inbox_button.setVisible(False)
         self.clear_inbox_button.clicked.connect(self._delete_local_messages)
         self.auto_receive = QCheckBox("Receive automatically after /satphone")
         self.auto_receive.setChecked(bool(self.settings.value("auto_receive", True, type=bool)))
         self.auto_receive.toggled.connect(lambda value: self.settings.setValue("auto_receive", value))
         controls.addWidget(self.receive_button)
         controls.addWidget(self.read_inbox_button)
+        controls.addWidget(self.clear_inbox_button)
         controls.addStretch()
         controls.addWidget(self.auto_receive)
         incoming_layout.addLayout(controls)
@@ -388,7 +397,6 @@ class MainWindow(QMainWindow):
         self.message_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.message_table.setMinimumHeight(105)
         incoming_layout.addWidget(self.message_table)
-        incoming_layout.addWidget(self.clear_inbox_button, alignment=Qt.AlignRight)
         layout.addWidget(incoming_box, 1)
         return page
 
@@ -447,11 +455,37 @@ class MainWindow(QMainWindow):
 
     def _connections_tab(self) -> QWidget:
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        scroll_body = QWidget()
+        body_layout = QHBoxLayout(scroll_body)
+        body_layout.setContentsMargins(24, 24, 24, 24)
+        body_layout.setAlignment(Qt.AlignTop)
+
+        content = QWidget()
+        content.setMaximumWidth(980)
+        content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(18)
+
+        body_layout.addStretch(1)
+        body_layout.addWidget(content, 4)
+        body_layout.addStretch(1)
+        scroll.setWidget(scroll_body)
+        page_layout.addWidget(scroll)
+
         config_box = QGroupBox("Discord and Notehub identifiers (not secrets)")
+        config_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         form = QFormLayout(config_box)
+        self._configure_form(form)
         self.project_uid = QLineEdit()
         self.device_uid = QLineEdit()
         self.guild_id = QLineEdit()
@@ -465,28 +499,31 @@ class MainWindow(QMainWindow):
         form.addRow("Discord channel ID", self.channel_id)
         form.addRow("Allowed Discord user IDs", self.allowed_users)
         form.addRow("Authorization", self.trust_permissions)
-        save = QPushButton("Save connection settings")
-        save.setObjectName("primaryButton")
-        save.clicked.connect(self._save_connection_fields)
-        form.addRow("", save)
+        self.save_connection_button = QPushButton("Save connection settings")
+        self.save_connection_button.setObjectName("primaryButton")
+        self.save_connection_button.clicked.connect(self._save_connection_fields)
+        form.addRow("", self.save_connection_button)
         layout.addWidget(config_box)
 
         secrets = QGroupBox("Credentials stored only in macOS Keychain")
+        secrets.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         secrets_form = QFormLayout(secrets)
+        self._configure_form(secrets_form)
         self.discord_token = QLineEdit()
         self.discord_token.setEchoMode(QLineEdit.Password)
         self.discord_token.setPlaceholderText("Paste a new token only when changing it")
         self.notehub_token = QLineEdit()
         self.notehub_token.setEchoMode(QLineEdit.Password)
         self.notehub_token.setPlaceholderText("Paste an expiring Personal Access Token")
-        save_secrets = QPushButton("Store both in Keychain")
-        save_secrets.clicked.connect(self._save_secrets)
+        self.save_secrets_button = QPushButton("Store both in Keychain")
+        self.save_secrets_button.clicked.connect(self._save_secrets)
         secrets_form.addRow("Discord bot token", self.discord_token)
         secrets_form.addRow("Notehub token", self.notehub_token)
-        secrets_form.addRow("", save_secrets)
+        secrets_form.addRow("", self.save_secrets_button)
         layout.addWidget(secrets)
 
         bridge_box = QGroupBox("Discord bridge")
+        bridge_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         bridge_layout = QHBoxLayout(bridge_box)
         start = QPushButton("Start")
         start.clicked.connect(self._start_bridge)
@@ -502,6 +539,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(bridge_box)
         layout.addStretch()
         return page
+
+    @staticmethod
+    def _configure_form(form: QFormLayout) -> None:
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(12)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
     def _maintenance_tab(self) -> QWidget:
         page = QWidget()
@@ -603,7 +648,7 @@ class MainWindow(QMainWindow):
         browser.setOpenExternalLinks(True)
         browser.setHtml(
             """
-            <h1>SATPHONE setup and testing</h1>
+            <h1>Tacthrift Notecard Satphone setup and testing</h1>
             <h2>What this app does</h2>
             <p>Think of the Notecard as the traffic manager and StarNote as the satellite radio. This Mac app gives them instructions over USB. Discord messages first wait in Notehub, then the device asks the satellite network to download them.</p>
             <h2>First-time setup</h2>
@@ -631,7 +676,7 @@ class MainWindow(QMainWindow):
             <h2>Firmware</h2>
             <p><b>Tools → Firmware</b> supports a T-Deck ESP32-S3 <code>.bin</code> image at the exact address supplied by its release instructions. A wrong image or address can stop the T-Deck from booting. Notecard updates should use the <a href="https://dev.blues.io/notehub/host-firmware-updates/notecard-outboard-firmware-update/">Blues Notehub firmware workflow</a>. StarNote updates may require special hardware; follow the <a href="https://dev.blues.io/starnote/starnote-firmware-releases/">official StarNote release instructions</a>.</p>
             <h2>Opening an unsigned GitHub download</h2>
-            <p>Because this is a community app and not notarized by Apple, macOS may warn the first time. In Finder, Control-click SATPHONE.app, choose <b>Open</b>, then confirm. Only download releases from the project’s GitHub page.</p>
+            <p>Because this is a community app and not notarized by Apple, macOS may warn the first time. In Finder, Control-click <b>Tacthrift Notecard Satphone.app</b>, choose <b>Open</b>, then confirm. Only download releases from the project’s GitHub page.</p>
             <h2>When something is busy</h2>
             <p>Only one app can use the Notecard USB port. Quit the older SATPHONE terminal, close the Blues browser terminal, and retry. The new app does not need either of the old command files.</p>
             """
@@ -662,41 +707,45 @@ class MainWindow(QMainWindow):
         return page
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow { background: #f7f8fa; }
-            QWidget { color: #1d2939; font-size: 13px; }
+        check_icon = (Path(__file__).resolve().parent / "assets" / "check.svg").as_posix()
+        style = """
+            QMainWindow { background: #f5f5f5; }
+            QWidget { color: #171717; font-size: 13px; }
             QLabel, QCheckBox { background: transparent; }
-            QLabel#appTitle { font-size: 27px; font-weight: 750; color: #101828; }
-            QLabel#subtitle, QLabel#muted { color: #667085; }
-            QLabel#lead { font-size: 15px; color: #344054; padding: 2px 0 6px 0; }
-            QLabel#cardTitle { font-size: 17px; font-weight: 700; color: #101828; }
-            QLabel#warning { background: #fffaeb; color: #93370d; border: 1px solid #fedf89; border-radius: 9px; padding: 12px; }
-            QLabel#statusBadge { background: white; border: 1px solid #d0d5dd; border-radius: 13px; padding: 7px 11px; }
-            QWidget#readinessCard { background: #eef4ff; border: 1px solid #b2ccff; border-radius: 11px; }
-            QGroupBox { background: white; border: 1px solid #e4e7ec; border-radius: 10px; margin-top: 12px; padding: 18px; font-weight: 650; }
-            QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; color: #101828; }
-            QPushButton { background: white; color: #344054; border: 1px solid #d0d5dd; border-radius: 7px; padding: 9px 14px; font-weight: 600; }
-            QPushButton:hover { background: #f9fafb; border-color: #98a2b3; }
-            QPushButton#primaryButton { background: #155eef; color: white; border-color: #155eef; }
-            QPushButton#primaryButton:hover { background: #004eeb; border-color: #004eeb; }
-            QPushButton#dangerButton { color: #b42318; border-color: #fda29b; }
-            QPushButton#dangerButton:hover { background: #fef3f2; border-color: #f97066; }
-            QPushButton:disabled { background: #f2f4f7; color: #98a2b3; border-color: #e4e7ec; }
-            QPushButton#primaryButton:disabled { background: #dbe7ff; color: #84adff; border-color: #dbe7ff; }
-            QPushButton#dangerButton:disabled { background: #f2f4f7; color: #98a2b3; border-color: #e4e7ec; }
-            QLineEdit, QPlainTextEdit, QTextBrowser, QComboBox, QTableWidget { background: white; border: 1px solid #d0d5dd; border-radius: 7px; padding: 6px; selection-background-color: #d1e0ff; }
-            QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus { border-color: #528bff; }
-            QTableWidget { gridline-color: #eaecf0; }
-            QHeaderView::section { background: #f9fafb; color: #475467; border: none; border-bottom: 1px solid #eaecf0; padding: 8px; font-weight: 650; }
-            QTabWidget#mainTabs::pane { border: none; background: #f7f8fa; }
-            QTabWidget#mainTabs > QTabBar::tab { padding: 10px 20px; margin-right: 4px; color: #667085; border: none; background: transparent; }
-            QTabWidget#mainTabs > QTabBar::tab:selected { color: #155eef; font-weight: 700; border-bottom: 2px solid #155eef; }
-            QTabWidget#sectionTabs::pane { border: 1px solid #e4e7ec; border-radius: 10px; background: white; top: -1px; }
-            QTabWidget#sectionTabs > QTabBar::tab { padding: 9px 15px; color: #667085; border: none; background: #f9fafb; }
-            QTabWidget#sectionTabs > QTabBar::tab:selected { color: #155eef; font-weight: 700; background: white; }
+            QLabel#appTitle { font-size: 25px; font-weight: 750; color: #0a0a0a; }
+            QLabel#subtitle, QLabel#muted { color: #525252; }
+            QLabel#lead { font-size: 15px; color: #262626; padding: 2px 0 6px 0; }
+            QLabel#cardTitle { font-size: 17px; font-weight: 700; color: #0a0a0a; }
+            QLabel#warning { background: #f5f5f5; color: #262626; border: 1px solid #a3a3a3; border-radius: 9px; padding: 12px; }
+            QLabel#statusBadge { background: white; border: 1px solid #d4d4d4; border-radius: 13px; padding: 7px 11px; }
+            QWidget#readinessCard { background: #eeeeee; border: 1px solid #c7c7c7; border-radius: 11px; }
+            QGroupBox { background: white; border: 1px solid #d4d4d4; border-radius: 10px; margin-top: 12px; padding: 18px; font-weight: 650; }
+            QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; color: #0a0a0a; }
+            QPushButton { background: white; color: #262626; border: 1px solid #a3a3a3; border-radius: 7px; padding: 8px 14px; min-height: 22px; font-weight: 600; }
+            QPushButton:hover { background: #eeeeee; border-color: #737373; }
+            QPushButton#primaryButton { background: #171717; color: white; border-color: #171717; }
+            QPushButton#primaryButton:hover { background: #000000; border-color: #000000; }
+            QPushButton#dangerButton { color: #171717; border-color: #737373; }
+            QPushButton#dangerButton:hover { background: #e5e5e5; border-color: #404040; }
+            QPushButton:disabled, QPushButton#primaryButton:disabled, QPushButton#dangerButton:disabled { background: #eeeeee; color: #a3a3a3; border-color: #d4d4d4; }
+            QLineEdit, QPlainTextEdit, QTextBrowser, QComboBox, QTableWidget { background: white; border: 1px solid #bdbdbd; border-radius: 7px; padding: 6px; selection-background-color: #262626; selection-color: white; }
+            QLineEdit, QComboBox { min-height: 22px; }
+            QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus { border: 2px solid #171717; }
+            QCheckBox { min-height: 24px; spacing: 7px; }
+            QCheckBox::indicator { width: 16px; height: 16px; background: white; border: 1px solid #737373; border-radius: 3px; }
+            QCheckBox::indicator:checked { background: #171717; border-color: #171717; image: url("__CHECK_ICON__"); }
+            QCheckBox::indicator:disabled { background: #eeeeee; border-color: #d4d4d4; }
+            QTableWidget { gridline-color: #e5e5e5; }
+            QHeaderView::section { background: #f5f5f5; color: #404040; border: none; border-bottom: 1px solid #d4d4d4; padding: 8px; font-weight: 650; }
+            QScrollArea#settingsScroll, QScrollArea#settingsScroll > QWidget > QWidget { background: white; }
+            QTabWidget#mainTabs::pane { border: none; background: #f5f5f5; }
+            QTabWidget#mainTabs > QTabBar::tab { padding: 10px 20px; margin-right: 4px; color: #737373; border: none; background: transparent; }
+            QTabWidget#mainTabs > QTabBar::tab:selected { color: #0a0a0a; font-weight: 700; border-bottom: 2px solid #0a0a0a; }
+            QTabWidget#sectionTabs::pane { border: 1px solid #d4d4d4; border-radius: 10px; background: white; top: -1px; }
+            QTabWidget#sectionTabs > QTabBar::tab { padding: 9px 15px; color: #737373; border: none; background: #f5f5f5; }
+            QTabWidget#sectionTabs > QTabBar::tab:selected { color: #0a0a0a; font-weight: 700; background: white; }
             """
-        )
+        self.setStyleSheet(style.replace("__CHECK_ICON__", check_icon))
 
     def _selected_port(self) -> Optional[str]:
         return self.port_combo.currentData()
@@ -757,7 +806,7 @@ class MainWindow(QMainWindow):
         if not available:
             self.ready_title.setText("Connect your device")
             self.ready_detail.setText(
-                "Plug the Notecard + StarNote kit into USB. SATPHONE will find it automatically."
+                "Plug the Notecard + StarNote kit into USB. Tacthrift will find it automatically."
             )
             self.find_device_button.setText("Find device")
             self.find_device_button.setObjectName("primaryButton")
@@ -767,7 +816,7 @@ class MainWindow(QMainWindow):
                 )
         elif self.usb_busy:
             self.ready_title.setText("Device is working")
-            self.ready_detail.setText("SATPHONE is completing the current satellite or USB task.")
+            self.ready_detail.setText("Tacthrift is completing the current satellite or USB task.")
             self.find_device_button.setText("Working…")
             if hasattr(self, "device_detail"):
                 self.device_detail.setText("Connected on {}. A device task is running.".format(self._selected_port()))
@@ -781,7 +830,7 @@ class MainWindow(QMainWindow):
             self.find_device_button.setText("Check connection")
             self.find_device_button.setObjectName("")
             if hasattr(self, "device_detail"):
-                self.device_detail.setText("Connected on {}. SATPHONE selected this port automatically.".format(self._selected_port()))
+                self.device_detail.setText("Connected on {}. Tacthrift selected this port automatically.".format(self._selected_port()))
         self.find_device_button.style().unpolish(self.find_device_button)
         self.find_device_button.style().polish(self.find_device_button)
 
@@ -820,7 +869,7 @@ class MainWindow(QMainWindow):
     ) -> bool:
         if usb and self.usb_busy:
             self._log("{} postponed because another USB operation is active.".format(label))
-            QMessageBox.information(self, "SATPHONE is busy", "Wait for the current device operation to finish.")
+            QMessageBox.information(self, "Tacthrift is busy", "Wait for the current device operation to finish.")
             return False
         if usb:
             self.usb_busy = True
@@ -956,6 +1005,7 @@ class MainWindow(QMainWindow):
     def _show_local_messages(self, messages: List[Message]) -> None:
         self.local_messages = list(messages)
         self.clear_inbox_button.setEnabled(bool(messages))
+        self.clear_inbox_button.setVisible(bool(messages))
         self.message_table.setRowCount(len(messages))
         for row, message in enumerate(messages):
             self.message_table.setItem(row, 0, QTableWidgetItem(_timestamp(message.time)))
@@ -985,13 +1035,14 @@ class MainWindow(QMainWindow):
     def _local_delete_finished(self, deleted: List[Message]) -> None:
         self.local_messages = []
         self.clear_inbox_button.setEnabled(False)
+        self.clear_inbox_button.setVisible(False)
         self.message_table.setRowCount(0)
         QMessageBox.information(self, "Local inbox cleared", "Deleted {} local message(s).".format(len(deleted)))
 
     def _update_message_count(self) -> None:
         count = message_size_bytes(self.compose.toPlainText().strip())
         self.message_count.setText("{} / {} bytes".format(count, MAX_MESSAGE_BYTES))
-        self.message_count.setStyleSheet("color: #b91c1c;" if count > MAX_MESSAGE_BYTES else "")
+        self.message_count.setStyleSheet("color: #000000; font-weight: 700;" if count > MAX_MESSAGE_BYTES else "")
 
     def _send_message(self) -> None:
         try:
@@ -1362,9 +1413,16 @@ class MainWindow(QMainWindow):
 def run_gui(argv: Optional[List[str]] = None) -> int:
     os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
     app = QApplication(argv if argv is not None else sys.argv)
-    app.setApplicationName("SATPHONE")
-    app.setOrganizationName("SATPHONE")
+    app.setApplicationName(APP_DISPLAY_NAME)
+    app.setApplicationDisplayName(APP_DISPLAY_NAME)
+    app.setOrganizationName(LEGACY_SETTINGS_NAME)
     app.setApplicationVersion(__version__)
+    palette = app.palette()
+    palette.setColor(QPalette.Highlight, QColor("#171717"))
+    palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    if hasattr(QPalette, "Accent"):
+        palette.setColor(QPalette.Accent, QColor("#171717"))
+    app.setPalette(palette)
     window = MainWindow()
     window.show()
     return app.exec()

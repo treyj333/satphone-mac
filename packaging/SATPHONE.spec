@@ -5,6 +5,7 @@ from PyInstaller.utils.hooks import collect_all
 
 
 project_root = Path(SPECPATH).parent
+app_name = "Tacthrift Notecard Satphone"
 esptool_datas, esptool_binaries, esptool_hiddenimports = collect_all("esptool")
 
 a = Analysis(
@@ -14,6 +15,7 @@ a = Analysis(
     datas=[
         (str(project_root / "README.md"), "."),
         (str(project_root / "discord-bridge.example.json"), "."),
+        (str(project_root / "satphone" / "assets"), "satphone/assets"),
     ] + esptool_datas,
     hiddenimports=esptool_hiddenimports + [
         "notecard",
@@ -37,7 +39,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="SATPHONE",
+    name=app_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -56,22 +58,22 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="SATPHONE",
+    name=app_name,
 )
 
 app = BUNDLE(
     coll,
-    name="SATPHONE.app",
+    name=f"{app_name}.app",
     icon=None,
     bundle_identifier="io.github.satphone-community.satphone",
-    version="1.0.0",
+    version="1.2.0",
     info_plist={
-        "CFBundleDisplayName": "SATPHONE",
-        "CFBundleName": "SATPHONE",
-        "CFBundleShortVersionString": "1.0.0",
-        "CFBundleVersion": "1",
+        "CFBundleDisplayName": app_name,
+        "CFBundleName": app_name,
+        "CFBundleShortVersionString": "1.2.0",
+        "CFBundleVersion": "3",
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
-        "NSHumanReadableCopyright": "Community SATPHONE project",
+        "NSHumanReadableCopyright": "Tacthrift Notecard Satphone community project",
     },
 )

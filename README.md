@@ -1,6 +1,6 @@
-# SATPHONE for macOS
+# Tacthrift Notecard Satphone for macOS
 
-SATPHONE is a community macOS application for operating and diagnosing a Blues Notecard + StarNote satellite messaging setup. It combines the old SATPHONE terminal and Discord bridge into one double-clickable app.
+Tacthrift Notecard Satphone is a community macOS application for operating and diagnosing a Blues Notecard + StarNote satellite messaging setup. It combines the legacy SATPHONE terminal and Discord bridge into one double-clickable app.
 
 The app provides:
 
@@ -17,13 +17,13 @@ The app serializes every Notecard USB operation so two features cannot fight ove
 
 ## Download and open the Mac app
 
-Download `SATPHONE-macOS-<architecture>.zip` from the GitHub Releases page, unzip it, and move `SATPHONE.app` to Applications.
+Download `Tacthrift-Notecard-Satphone-macOS-<architecture>.zip` from the GitHub Releases page, unzip it, and move `Tacthrift Notecard Satphone.app` to Applications.
 
-This is an ad-hoc-signed community build, not an Apple-notarized App Store product. On first launch, Control-click `SATPHONE.app` in Finder, choose **Open**, then confirm.
+This is an ad-hoc-signed community build, not an Apple-notarized App Store product. On first launch, Control-click `Tacthrift Notecard Satphone.app` in Finder, choose **Open**, then confirm.
 
 Apple Silicon Macs use the `arm64` download. Intel Macs use the `X64`/`x86_64` download produced by GitHub Actions.
 
-Application settings and logs live in:
+Application settings and logs continue to use the legacy folder so upgrades keep the existing configuration:
 
 ```text
 ~/Library/Application Support/SATPHONE/
@@ -47,8 +47,8 @@ PYTHON_BIN="$PWD/.venv/bin/python" zsh scripts/build_macos.sh
 The build creates:
 
 ```text
-dist/SATPHONE.app
-release/SATPHONE-macOS-<architecture>.zip
+dist/Tacthrift Notecard Satphone.app
+release/Tacthrift-Notecard-Satphone-macOS-<architecture>.zip
 ```
 
 The GitHub workflow runs the full simulated test suite, builds an unsigned/ad-hoc-signed Mac artifact for pull requests, and creates a draft GitHub Release when a `v*` tag is pushed.
@@ -120,7 +120,7 @@ python satphone.py
 
 The Finder-friendly launchers use this folder's `.venv`. The requirements pin `note-python` 2.4.1, its maintained `filelock` dependency, PySerial, the desktop `python-periphery` transport imported by the SDK, and `discord.py` 2.7.1; they do not install the retired Python 3.9 dependency line.
 
-Only one program can own the Notecard USB serial stream. Disconnect the Blues in-browser terminal before launching SATPHONE.
+Only one program can own the Notecard USB serial stream. Disconnect the Blues in-browser terminal before launching Tacthrift Notecard Satphone.
 
 ## Message schema
 

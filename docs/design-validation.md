@@ -1,4 +1,4 @@
-# SATPHONE 1.1 design validation
+# Tacthrift Notecard Satphone design validation
 
 This pass applies the five-step engineering process described by Elon Musk in the Everyday Astronaut Starbase interview. The steps are intentionally used in order.
 
