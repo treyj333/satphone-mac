@@ -24,7 +24,8 @@ Success criteria:
 ## 3. Simplify and optimize
 
 - Messages is now the default screen.
-- One readiness card says either “Connect your device,” “Device is working,” or “Ready to send.”
+- One readiness card separates USB detection from honest, read-only satellite status.
+- One compact Activity card replaces the ambiguous frozen-looking state with a current step, elapsed time, animated progress, and optional details.
 - The app chooses the Notecard USB port automatically; manual port choice remains under Device.
 - “Send to Discord” and “Receive from Discord” use short explanations and one clear primary action each.
 - Diagnostics and connection settings live under Device. Queue cleanup, firmware, and logs live under Tools.
@@ -36,6 +37,7 @@ Success criteria:
 - A completed USB task immediately rechecks the physical connection.
 - The message byte counter updates while typing.
 - The health check opens its detailed result automatically.
+- Sends and receives report USB opening, template setup, local queueing, satellite waiting/connection, transfer, and completion as they happen.
 
 ## 5. Automate
 
@@ -44,6 +46,6 @@ Success criteria:
 
 ## Validation checklist
 
-- Automated tests cover the four-section navigation, default Messages screen, secondary grouping, and disconnected-device state.
+- Automated tests cover the four-section navigation, default Messages screen, secondary grouping, disconnected-device state, live operation steps, and protection against message-body leakage in activity text.
 - The app must be visually checked at its minimum and default window sizes.
 - A real-device health check remains required whenever hardware is unavailable during packaging.

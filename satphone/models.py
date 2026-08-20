@@ -98,6 +98,14 @@ class SyncPhase(str, Enum):
     TIMED_OUT = "timed_out"
 
 
+@dataclass(frozen=True)
+class OperationUpdate:
+    """A safe, human-readable step from a longer device operation."""
+
+    stage: str
+    message: str
+
+
 @dataclass
 class SyncUpdate:
     elapsed: int

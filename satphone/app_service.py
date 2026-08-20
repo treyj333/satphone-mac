@@ -18,7 +18,13 @@ from .messages import (
     repair_template,
     verify_template,
 )
-from .models import DiagnosticSnapshot, Message, SyncResult, SyncUpdate, TemplateCheck
+from .models import (
+    DiagnosticSnapshot,
+    Message,
+    OperationUpdate,
+    SyncResult,
+    TemplateCheck,
+)
 from .notecard import DeviceNotFoundError, NotecardClient, SerialDevice, discover_notecard_ports
 from .reporting import export_report
 from .satellite import SyncMonitor, ntn_status, set_ntn_transport, transport_status
@@ -72,6 +78,13 @@ class DeviceService:
             with NotecardClient.open(selected) as client:
                 return action(client)
 
+    @staticmethod
+    def _notify(
+        callback: Optional[Callable[[object], None]], stage: str, message: str
+    ) -> None:
+        if callback is not None:
+            callback(OperationUpdate(stage=stage, message=message))
+
     def diagnostics(self, port: Optional[str]) -> DiagnosticResult:
         def action(client: NotecardClient) -> DiagnosticResult:
             snapshot, templates = DiagnosticRunner(client).run()
@@ -92,15 +105,36 @@ class DeviceService:
     def receive_messages(
         self,
         port: Optional[str],
-        callback: Optional[Callable[[SyncUpdate], None]] = None,
+        callback: Optional[Callable[[object], None]] = None,
     ) -> MessageSyncResult:
+        self._notify(callback, "USB", "Opening the Notecard connection over USB.")
+
         def action(client: NotecardClient) -> MessageSyncResult:
+            self._notify(
+                callback,
+                "Satellite",
+                "Checking for an active sync, then starting one inbound sync if needed.",
+            )
             sync = SyncMonitor(
                 client,
                 poll_seconds=self.poll_seconds,
                 timeout_seconds=self.timeout_seconds,
             ).run("in", callback=callback)
-            messages = read_messages(client) if sync.completed else []
+            messages: List[Message] = []
+            if sync.completed:
+                self._notify(
+                    callback,
+                    "Inbox",
+                    "Satellite sync completed. Reading downloaded messages from the Notecard.",
+                )
+                messages = read_messages(client)
+                self._notify(
+                    callback,
+                    "Inbox",
+                    "Finished reading the local inbox; found {} message(s).".format(
+                        len(messages)
+                    ),
+                )
             return MessageSyncResult(sync, messages)
 
         return self._with_client(port, action)
@@ -109,15 +143,32 @@ class DeviceService:
         self,
         port: Optional[str],
         message: str,
-        callback: Optional[Callable[[SyncUpdate], None]] = None,
+        callback: Optional[Callable[[object], None]] = None,
     ) -> SendResult:
+        self._notify(callback, "USB", "Opening the Notecard connection over USB.")
+
         def action(client: NotecardClient) -> SendResult:
+            self._notify(
+                callback,
+                "Setup",
+                "Checking that the outbound satellite message template is ready.",
+            )
             template = verify_template(client, OUTBOUND_TEMPLATE)
             if not template.valid:
                 raise RuntimeError(
                     "The outbound template is not ready. Run Diagnostics and approve the template repair first."
                 )
+            self._notify(
+                callback,
+                "Queue",
+                "Saving the message safely in the Notecard's outbound queue.",
+            )
             queued = queue_outbound_message(client, message)
+            self._notify(
+                callback,
+                "Satellite",
+                "Message queued locally. Starting one outbound sync; no duplicate request will be sent.",
+            )
             sync = SyncMonitor(
                 client,
                 poll_seconds=self.poll_seconds,
@@ -158,15 +209,29 @@ class DeviceService:
     def get_transport(self, port: Optional[str]) -> Dict[str, Any]:
         return self._with_client(port, transport_status)
 
-    def connection_status(self, port: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    def connection_status(
+        self,
+        port: Optional[str],
+        callback: Optional[Callable[[object], None]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
         """Read USB-visible satellite state without starting a paid sync."""
-        return self._with_client(
-            port,
-            lambda client: {
-                "ntn": ntn_status(client),
-                "transport": transport_status(client),
-            },
-        )
+        self._notify(callback, "USB", "Opening the Notecard connection over USB.")
+
+        def action(client: NotecardClient) -> Dict[str, Dict[str, Any]]:
+            self._notify(
+                callback,
+                "StarNote",
+                "Reading the live StarNote satellite state. This does not start a sync.",
+            )
+            ntn = ntn_status(client)
+            self._notify(
+                callback,
+                "Transport",
+                "Checking which network transport the Notecard is configured to use.",
+            )
+            return {"ntn": ntn, "transport": transport_status(client)}
+
+        return self._with_client(port, action)
 
     def repair_transport(self, port: Optional[str]) -> Dict[str, Dict[str, Any]]:
         return self._with_client(port, set_ntn_transport)

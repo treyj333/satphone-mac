@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -62,7 +64,7 @@ from .discord_bridge import (
 )
 from .firmware import FirmwarePort, flash_tdeck, inspect_tdeck, list_firmware_ports
 from .messages import message_size_bytes, validate_message
-from .models import CheckLevel, Message, SyncPhase, SyncUpdate
+from .models import CheckLevel, Message, OperationUpdate, SyncPhase, SyncUpdate
 from .notehub_admin import NotehubAdminClient, NotehubNote
 from .satellite import status_tags, transport_status_error, transport_supports_ntn
 
@@ -171,6 +173,7 @@ class Worker(QRunnable):
         self.function = function
         self.with_progress = with_progress
         self.signals = WorkerSignals()
+        self.failed = False
 
     @Slot()
     def run(self) -> None:
@@ -180,6 +183,7 @@ class Worker(QRunnable):
             else:
                 result = self.function()
         except Exception as exc:
+            self.failed = True
             self.signals.error.emit(str(exc))
         else:
             self.signals.result.emit(result)
@@ -240,6 +244,9 @@ class MainWindow(QMainWindow):
         self.satellite_status_port: Optional[str] = None
         self.satellite_title = ""
         self.satellite_detail = ""
+        self.activity_worker: Optional[Worker] = None
+        self.activity_started_at = 0.0
+        self.activity_terminal_phase: Optional[SyncPhase] = None
 
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.resize(1060, 760)
@@ -251,6 +258,10 @@ class MainWindow(QMainWindow):
         self._refresh_notecard_ports()
         self._refresh_firmware_ports()
         self._log("{} application started.".format(APP_DISPLAY_NAME))
+
+        self.activity_timer = QTimer(self)
+        self.activity_timer.timeout.connect(self._activity_tick)
+        self.activity_timer.start(1000)
 
         self.bridge_watchdog = QTimer(self)
         self.bridge_watchdog.timeout.connect(self._bridge_watchdog_tick)
@@ -402,7 +413,19 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(18)
+        layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("messagesScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
 
         readiness = QWidget()
         readiness.setObjectName("readinessCard")
@@ -421,7 +444,51 @@ class MainWindow(QMainWindow):
         self.find_device_button.setObjectName("primaryButton")
         self.find_device_button.clicked.connect(self._find_or_check_connection)
         readiness_layout.addWidget(self.find_device_button)
-        layout.addWidget(readiness)
+        content_layout.addWidget(readiness)
+
+        activity = QWidget()
+        activity.setObjectName("activityCard")
+        activity_layout = QVBoxLayout(activity)
+        activity_layout.setContentsMargins(18, 14, 18, 14)
+        activity_layout.setSpacing(8)
+        activity_header = QHBoxLayout()
+        self.activity_title = QLabel("Activity")
+        self.activity_title.setObjectName("activityTitle")
+        self.activity_elapsed = QLabel("Idle")
+        self.activity_elapsed.setObjectName("activityElapsed")
+        self.activity_details_button = QPushButton("Show details")
+        self.activity_details_button.setObjectName("quietButton")
+        self.activity_details_button.clicked.connect(self._toggle_activity_details)
+        full_log = QPushButton("Full log")
+        full_log.setObjectName("quietButton")
+        full_log.clicked.connect(self._open_full_log)
+        activity_header.addWidget(self.activity_title)
+        activity_header.addStretch()
+        activity_header.addWidget(self.activity_elapsed)
+        activity_header.addWidget(self.activity_details_button)
+        activity_header.addWidget(full_log)
+        activity_layout.addLayout(activity_header)
+        self.activity_step = QLabel(
+            "No task is running. Start a check, send, or receive to see each step here."
+        )
+        self.activity_step.setObjectName("muted")
+        self.activity_step.setWordWrap(True)
+        activity_layout.addWidget(self.activity_step)
+        self.activity_progress = QProgressBar()
+        self.activity_progress.setObjectName("activityProgress")
+        self.activity_progress.setTextVisible(False)
+        self.activity_progress.setFixedHeight(5)
+        self.activity_progress.setVisible(False)
+        activity_layout.addWidget(self.activity_progress)
+        self.activity_details = QPlainTextEdit()
+        self.activity_details.setObjectName("activityDetails")
+        self.activity_details.setReadOnly(True)
+        self.activity_details.setFont(QFont("Menlo", 10))
+        self.activity_details.setMaximumHeight(112)
+        self.activity_details.setVisible(False)
+        self.activity_details.setPlaceholderText("Detailed task steps appear here.")
+        activity_layout.addWidget(self.activity_details)
+        content_layout.addWidget(activity)
 
         compose_box = QGroupBox("Send to Discord")
         compose_layout = QVBoxLayout(compose_box)
@@ -446,7 +513,7 @@ class MainWindow(QMainWindow):
         self.send_button.clicked.connect(self._send_message)
         bottom.addWidget(self.send_button)
         compose_layout.addLayout(bottom)
-        layout.addWidget(compose_box)
+        content_layout.addWidget(compose_box)
 
         incoming_box = QGroupBox("Receive from Discord")
         incoming_layout = QVBoxLayout(incoming_box)
@@ -483,7 +550,7 @@ class MainWindow(QMainWindow):
         self.message_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.message_table.setMinimumHeight(105)
         incoming_layout.addWidget(self.message_table)
-        layout.addWidget(incoming_box, 1)
+        content_layout.addWidget(incoming_box, 1)
         return page
 
     def _diagnostics_tab(self) -> QWidget:
@@ -764,6 +831,7 @@ class MainWindow(QMainWindow):
             <h2>Opening an unsigned GitHub download</h2>
             <p>Because this is a community app and not notarized by Apple, macOS may warn the first time. In Finder, Control-click <b>Tacthrift Notecard Satphone.app</b>, choose <b>Open</b>, then confirm. Only download releases from the project’s GitHub page.</p>
             <h2>When something is busy</h2>
+            <p>The Activity card on Messages shows the current backend step and elapsed time, and satellite tasks open their detailed timeline automatically. An animated line means the task is still running. Full log opens the longer history. Activity never includes message contents or credentials.</p>
             <p>Only one app can use the Notecard USB port. Quit the older SATPHONE terminal, close the Blues browser terminal, and retry. The new app does not need either of the old command files.</p>
             """
         )
@@ -805,6 +873,9 @@ class MainWindow(QMainWindow):
             QLabel#warning { background: #f5f5f5; color: #262626; border: 1px solid #a3a3a3; border-radius: 9px; padding: 12px; }
             QLabel#statusBadge { background: white; border: 1px solid #d4d4d4; border-radius: 13px; padding: 7px 11px; }
             QWidget#readinessCard { background: #eeeeee; border: 1px solid #c7c7c7; border-radius: 11px; }
+            QWidget#activityCard { background: white; border: 1px solid #d4d4d4; border-radius: 10px; }
+            QLabel#activityTitle { font-size: 14px; font-weight: 700; color: #0a0a0a; }
+            QLabel#activityElapsed { color: #525252; font-family: Menlo; min-width: 54px; }
             QGroupBox { background: white; border: 1px solid #d4d4d4; border-radius: 10px; margin-top: 12px; padding: 18px; font-weight: 650; }
             QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; color: #0a0a0a; }
             QPushButton { background: white; color: #262626; border: 1px solid #a3a3a3; border-radius: 7px; padding: 8px 14px; min-height: 22px; font-weight: 600; }
@@ -813,6 +884,7 @@ class MainWindow(QMainWindow):
             QPushButton#primaryButton:hover { background: #000000; border-color: #000000; }
             QPushButton#dangerButton { color: #171717; border-color: #737373; }
             QPushButton#dangerButton:hover { background: #e5e5e5; border-color: #404040; }
+            QPushButton#quietButton { background: transparent; border-color: #d4d4d4; padding: 5px 10px; min-height: 18px; font-weight: 600; }
             QPushButton:disabled, QPushButton#primaryButton:disabled, QPushButton#dangerButton:disabled { background: #eeeeee; color: #a3a3a3; border-color: #d4d4d4; }
             QLineEdit, QPlainTextEdit, QTextBrowser, QComboBox, QTableWidget { background: white; border: 1px solid #bdbdbd; border-radius: 7px; padding: 6px; selection-background-color: #262626; selection-color: white; }
             QLineEdit, QComboBox { min-height: 22px; }
@@ -822,8 +894,12 @@ class MainWindow(QMainWindow):
             QCheckBox::indicator:checked { background: #171717; border-color: #171717; image: url("__CHECK_ICON__"); }
             QCheckBox::indicator:disabled { background: #eeeeee; border-color: #d4d4d4; }
             QTableWidget { gridline-color: #e5e5e5; }
+            QPlainTextEdit#activityDetails { background: #f5f5f5; border-color: #d4d4d4; color: #262626; padding: 8px; }
+            QProgressBar#activityProgress { background: #e5e5e5; border: none; border-radius: 2px; }
+            QProgressBar#activityProgress::chunk { background: #171717; border-radius: 2px; }
             QHeaderView::section { background: #f5f5f5; color: #404040; border: none; border-bottom: 1px solid #d4d4d4; padding: 8px; font-weight: 650; }
             QScrollArea#settingsScroll, QScrollArea#settingsScroll > QWidget > QWidget { background: white; }
+            QScrollArea#messagesScroll, QScrollArea#messagesScroll > QWidget > QWidget { background: transparent; }
             QTabWidget#mainTabs::pane { border: none; background: #f5f5f5; }
             QTabWidget#mainTabs > QTabBar::tab { padding: 10px 20px; margin-right: 4px; color: #737373; border: none; background: transparent; }
             QTabWidget#mainTabs > QTabBar::tab:selected { color: #0a0a0a; font-weight: 700; border-bottom: 2px solid #0a0a0a; }
@@ -948,10 +1024,11 @@ class MainWindow(QMainWindow):
         self.satellite_title = ""
         self.satellite_detail = ""
         self._run_worker(
-            lambda: self.device.connection_status(port),
+            lambda emit: self.device.connection_status(port, callback=emit),
             lambda result: self._show_connection_status(port, result),
             label="Read-only satellite status check",
             usb=True,
+            with_progress=True,
         )
 
     def _show_connection_status(self, port: str, result: Dict[str, Any]) -> None:
@@ -959,6 +1036,110 @@ class MainWindow(QMainWindow):
         self.satellite_title, self.satellite_detail = _satellite_readiness_copy(result)
         self._log("Satellite status: {}.".format(self.satellite_title))
         self._update_readiness()
+
+    @staticmethod
+    def _friendly_operation_name(label: str) -> str:
+        lowered = label.lower()
+        if "outbound satellite" in lowered:
+            return "Sending message"
+        if "inbound satellite" in lowered:
+            return "Receiving messages"
+        if "satellite status" in lowered:
+            return "Checking satellite status"
+        if "diagnostic" in lowered or "health" in lowered:
+            return "Checking device health"
+        if "inbox" in lowered:
+            return "Reading local inbox"
+        if "firmware" in lowered:
+            return "Updating firmware"
+        return label
+
+    @staticmethod
+    def _friendly_sync_stage(phase: SyncPhase) -> str:
+        return {
+            SyncPhase.IDLE: "Checking device state",
+            SyncPhase.REQUESTED: "Satellite sync requested",
+            SyncPhase.WAITING: "Waiting for satellite",
+            SyncPhase.CONNECTING: "Connecting to satellite",
+            SyncPhase.SYNCHRONIZING: "Transferring with Notehub",
+            SyncPhase.COMPLETED: "Satellite sync completed",
+            SyncPhase.FAILED: "Satellite sync failed",
+            SyncPhase.UNRESOLVED: "Satellite result is unclear",
+            SyncPhase.TIMED_OUT: "Still queued after local timeout",
+        }[phase]
+
+    @staticmethod
+    def _format_elapsed(seconds: int) -> str:
+        seconds = max(0, int(seconds))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return "{:02d}:{:02d}:{:02d}".format(hours, minutes, seconds)
+        return "{:02d}:{:02d}".format(minutes, seconds)
+
+    def _set_activity_details_visible(self, visible: bool) -> None:
+        self.activity_details.setVisible(visible)
+        self.activity_details_button.setText("Hide details" if visible else "Show details")
+
+    def _toggle_activity_details(self) -> None:
+        self._set_activity_details_visible(self.activity_details.isHidden())
+
+    def _open_full_log(self) -> None:
+        self.tabs.setCurrentWidget(self.tools_tab)
+        self.tool_tabs.setCurrentWidget(self.logs_tab)
+
+    def _append_activity(self, stage: str, message: str) -> None:
+        timestamp = datetime.now().astimezone().strftime("%H:%M:%S")
+        self.activity_details.appendPlainText(
+            "{}  {:<12} {}".format(timestamp, stage.upper()[:12], message)
+        )
+        scrollbar = self.activity_details.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _start_activity(self, worker: Worker, label: str, show_details: bool) -> None:
+        self.activity_worker = worker
+        self.activity_started_at = time.monotonic()
+        self.activity_terminal_phase = None
+        self.activity_title.setText(self._friendly_operation_name(label))
+        self.activity_elapsed.setText("00:00")
+        self.activity_step.setText("Starting in the background. You can keep using the app.")
+        self.activity_details.clear()
+        self._append_activity("Start", "{} started.".format(label))
+        self.activity_progress.setRange(0, 0)
+        self.activity_progress.setVisible(True)
+        self._set_activity_details_visible(show_details)
+
+    def _activity_tick(self) -> None:
+        if self.activity_worker is None:
+            return
+        elapsed = int(time.monotonic() - self.activity_started_at)
+        self.activity_elapsed.setText(self._format_elapsed(elapsed))
+
+    def _finish_activity(self, worker: Worker, label: str) -> None:
+        if self.activity_worker is not worker:
+            return
+        elapsed = int(time.monotonic() - self.activity_started_at)
+        phase = self.activity_terminal_phase
+        if worker.failed:
+            title = "Task needs attention"
+            summary = "The task stopped. Review the last step below, then retry after fixing it."
+            stage = "Stopped"
+        elif phase in {SyncPhase.FAILED, SyncPhase.UNRESOLVED, SyncPhase.TIMED_OUT}:
+            title = "Satellite result needs attention"
+            summary = "The message may still be queued. Review the last satellite update before retrying."
+            stage = "Unresolved"
+        else:
+            title = "Task complete"
+            summary = "{} finished without freezing the app.".format(
+                self._friendly_operation_name(label)
+            )
+            stage = "Complete"
+        self.activity_title.setText(title)
+        self.activity_step.setText(summary)
+        self.activity_elapsed.setText("{} total".format(self._format_elapsed(elapsed)))
+        self.activity_progress.setVisible(False)
+        self._append_activity(stage, summary)
+        self.activity_worker = None
 
     def _refresh_firmware_ports(self) -> None:
         selected = self.firmware_port.currentData() if hasattr(self, "firmware_port") else None
@@ -1007,10 +1188,15 @@ class MainWindow(QMainWindow):
         # callback has reached the main thread.
         worker.setAutoDelete(False)
         self.active_workers.add(worker)
+        self._start_activity(worker, label, show_details=with_progress)
         if on_result:
             worker.signals.result.connect(on_result)
-        worker.signals.error.connect(lambda message: self._task_error(label, message))
-        worker.signals.progress.connect(self._task_progress)
+        worker.signals.error.connect(
+            lambda message, worker=worker: self._task_error(worker, label, message)
+        )
+        worker.signals.progress.connect(
+            lambda value, worker=worker: self._task_progress(worker, value)
+        )
         worker.signals.finished.connect(
             lambda worker=worker: self._worker_finished(worker, label, usb)
         )
@@ -1019,6 +1205,7 @@ class MainWindow(QMainWindow):
 
     def _worker_finished(self, worker: Worker, label: str, usb: bool) -> None:
         try:
+            self._finish_activity(worker, label)
             if usb:
                 self._usb_finished(label)
             else:
@@ -1026,17 +1213,37 @@ class MainWindow(QMainWindow):
         finally:
             self.active_workers.discard(worker)
 
-    @Slot(object)
-    def _task_progress(self, value: object) -> None:
+    def _task_progress(self, worker: Worker, value: object) -> None:
         if isinstance(value, SyncUpdate):
             self._log("Sync {}s — {}: {}".format(value.elapsed, value.phase.value, value.message))
+            if self.activity_worker is worker:
+                stage = self._friendly_sync_stage(value.phase)
+                self.activity_terminal_phase = value.phase
+                self.activity_title.setText(stage)
+                self.activity_step.setText(value.message)
+                self._append_activity(stage, value.message)
+        elif isinstance(value, OperationUpdate):
+            self._log("Operation — {}: {}".format(value.stage, value.message))
+            if self.activity_worker is worker:
+                self.activity_title.setText(value.stage)
+                self.activity_step.setText(value.message)
+                self._append_activity(value.stage, value.message)
         else:
             self._log(str(value))
+            if self.activity_worker is worker:
+                message = str(value).strip().splitlines()[-1] if str(value).strip() else "Working…"
+                self.activity_step.setText(message)
+                self._append_activity("Working", message)
 
-    def _task_error(self, label: str, message: str) -> None:
+    def _task_error(self, worker: Worker, label: str, message: str) -> None:
         owner = self._serial_owner_hint() if "open the Notecard" in message or "serial" in message.lower() else ""
         detail = "{}{}".format(message, owner)
         self._log("{} failed: {}".format(label, detail))
+        if self.activity_worker is worker:
+            self.activity_title.setText("Task stopped")
+            self.activity_step.setText(message)
+            self._append_activity("Error", message)
+            self._set_activity_details_visible(True)
         QMessageBox.critical(self, "{} failed".format(label), detail)
 
     def _usb_finished(self, label: str) -> None:

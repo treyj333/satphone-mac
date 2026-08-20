@@ -5,6 +5,7 @@ Tacthrift Notecard Satphone is a community macOS application for operating and d
 The app provides:
 
 - a focused Messages screen that finds the Notecard automatically and makes send/receive readiness clear;
+- a live, privacy-safe activity timeline with the current backend step and elapsed time;
 - messages in both directions, with optional automatic inbound sync after `/satphone`;
 - read-only diagnostics and safe local self-repair;
 - separately confirmed template and satellite-transport repairs;
@@ -61,6 +62,8 @@ The GitHub workflow runs the full simulated test suite, builds an unsigned/ad-ho
 4. Register `/satphone` once, then start the bridge.
 5. Open **Device → Health & Repair** and run the health check. Review and separately approve any persistent template or transport repair.
 6. In Discord, use `/satphone`; do not post an ordinary channel message. Leave **Auto receive** on or click **Receive Now**.
+
+During a send, receive, connection check, or other background task, the **Activity** card shows what the app is doing and how long it has been running. Satellite sends expand the step-by-step view automatically. **Full log** opens the longer diagnostic history. Message contents and credentials are excluded from the activity timeline.
 
 ## Safety boundaries
 

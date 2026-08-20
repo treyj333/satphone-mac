@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 from satphone.app_service import DeviceService
 from satphone.gui import APP_DISPLAY_NAME, MainWindow, _satellite_readiness_copy
+from satphone.models import OperationUpdate, SyncPhase, SyncUpdate
 
 
 class GuiStructureTests(unittest.TestCase):
@@ -36,6 +37,8 @@ class GuiStructureTests(unittest.TestCase):
             self.assertEqual(window.device_tabs.count(), 3)
             self.assertEqual(window.tool_tabs.count(), 3)
             self.assertEqual(window.ready_title.text(), "Connect your device")
+            self.assertEqual(window.activity_title.text(), "Activity")
+            self.assertTrue(window.activity_details.isHidden())
             self.assertFalse(window.send_button.isEnabled())
             self.assertTrue(window.clear_inbox_button.isHidden())
             self.assertEqual(
@@ -79,6 +82,35 @@ class GuiStructureTests(unittest.TestCase):
                 self.app.processEvents()
             self.assertFalse(window.usb_busy)
             self.assertFalse(window.active_workers)
+            self.assertEqual(window.activity_title.text(), "Task complete")
+            self.assertTrue(window.activity_progress.isHidden())
+
+            def progress_task(emit):
+                emit(OperationUpdate("USB", "Opening the Notecard over USB."))
+                emit(
+                    SyncUpdate(
+                        elapsed=1,
+                        phase=SyncPhase.WAITING,
+                        message="Waiting for satellite network.",
+                        response={},
+                    )
+                )
+                return "done"
+
+            self.assertTrue(
+                window._run_worker(
+                    progress_task,
+                    label="Outbound satellite message",
+                    with_progress=True,
+                )
+            )
+            self.assertTrue(window.thread_pool.waitForDone(1000))
+            self.app.processEvents()
+            activity_text = window.activity_details.toPlainText()
+            self.assertIn("Opening the Notecard over USB.", activity_text)
+            self.assertIn("Waiting for satellite network.", activity_text)
+            self.assertEqual(window.activity_title.text(), "Task complete")
+            self.assertFalse(window.activity_details.isHidden())
         finally:
             window.close()
 
