@@ -1,0 +1,58 @@
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  test-and-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - macos-15
+          - macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Run tests
+        run: python -m unittest discover -v
+
+      - name: Build unsigned app
+        env:
+          PYTHON_BIN: python
+        run: zsh scripts/build_macos.sh
+
+      - name: Upload downloadable app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tacthrift-Notecard-Satphone-macOS-${{ runner.arch }}
+          path: release/Tacthrift-Notecard-Satphone-macOS-*.zip
+
+      - name: Attach app to tagged GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: release/Tacthrift-Notecard-Satphone-macOS-*.zip
+          body: |
+            Tacthrift Notecard Satphone community macOS build. This app is not notarized by Apple.
+
+            After downloading, unzip it. The first time, Control-click Tacthrift Notecard Satphone.app, choose Open, then confirm.

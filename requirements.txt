@@ -1,0 +1,9 @@
+# Python 3.10+ is required. Do not fall back to Apple's Python 3.9 because
+# current note-python also carries the maintained filelock dependency line.
+note-python==2.4.1
+filelock==3.32.3
+pyserial==3.5
+python-periphery==2.4.1
+discord.py==2.7.1
+PySide6==6.11.1
+esptool==5.3.1
